@@ -1,0 +1,12 @@
+node_modules/
+build/
+__pycache__/
+*.pyc
+# screenshots, contact sheets and run outputs never go in git
+*.png
+*.html
+!test_support/**
+# local scratch scripts
+/.*.mjs
+/.*.sh
+/.*.py

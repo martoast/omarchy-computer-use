@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# omarchy-computer-use: status | doctor | register | update | uninstall
+set -uo pipefail
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+NAME=omarchy-desktop
+find_cli() { command -v "$1" 2>/dev/null || { command -v mise >/dev/null && mise which "$1" 2>/dev/null; } || true; }
+pass() { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+fail() { printf '  \033[1;31m✗\033[0m %s\n' "$*"; BAD=1; }
+
+register() {
+    local c x; c=$(find_cli claude); x=$(find_cli codex)
+    [ -n "$c" ] && { "$c" mcp remove -s user "$NAME" >/dev/null 2>&1; "$c" mcp add -s user "$NAME" -- node "$DIR/index.js" >/dev/null && echo "registered with Claude Code"; }
+    [ -n "$x" ] && { "$x" mcp remove "$NAME" >/dev/null 2>&1; "$x" mcp add "$NAME" -- node "$DIR/index.js" >/dev/null 2>&1 && echo "registered with Codex"; }
+    [ -n "$c$x" ] || echo "no Claude Code or Codex found"
+}
+
+doctor() {
+    BAD=0
+    echo "omarchy-computer-use doctor ($DIR)"
+    for b in ydotool wtype grim hyprctl python3 node; do command -v $b >/dev/null && pass "$b" || fail "$b missing"; done
+    command -v wlrctl >/dev/null && pass "wlrctl (headless backend)" || printf '  - wlrctl not installed (only the headless backend needs it)\n'
+    systemctl --user is-active --quiet ydotool.service && pass "ydotoold running" || fail "ydotoold not running (systemctl --user restart ydotool)"
+    [ -w /dev/uinput ] && pass "/dev/uinput writable" || fail "/dev/uinput not writable (log out and back in, or re-run install.sh)"
+    python3 -c 'import gi; gi.require_version("Atspi","2.0"); from gi.repository import Atspi' 2>/dev/null && pass "AT-SPI python bindings" || fail "AT-SPI python bindings (python-gobject, at-spi2-core)"
+    [ "$(gsettings get org.gnome.desktop.interface toolkit-accessibility 2>/dev/null)" = "true" ] && pass "toolkit-accessibility on" || fail "toolkit-accessibility off"
+    [ "$(busctl --user get-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled 2>/dev/null)" = "b true" ] && pass "accessibility bus enabled" || fail "accessibility bus off (busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true, then restart Chromium)"
+    grep -qx -- '--force-renderer-accessibility' "$HOME/.config/chromium-flags.conf" 2>/dev/null && pass "Chromium accessibility flag" || fail "Chromium flag missing in ~/.config/chromium-flags.conf"
+    [ -d "$DIR/node_modules/@modelcontextprotocol" ] && pass "node deps" || fail "node deps (cd $DIR && npm ci)"
+    if out=$(cd "$DIR" && timeout 30 node bin/selftest.mjs 2>&1); then pass "MCP server answers: $out"; else fail "MCP server: $out"; fi
+    # plugins: the status the server wrote when it last started (selftest just started it)
+    local st="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-computer-use/plugins-status.json"
+    if [ -f "$st" ]; then
+        node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(s.error) console.log("FAIL plugins.json: "+s.error); if(!s.plugins.length) console.log("NONE"); for (const p of s.plugins) console.log((p.ok?"OK ":"FAIL ")+(p.name||p.spec)+(p.ok?"":": "+p.error));' "$st" 2>/dev/null | while IFS= read -r line; do
+            case "$line" in OK\ *) pass "plugin ${line#OK }";; FAIL\ *) fail "plugin skipped: ${line#FAIL }";; NONE) printf '  - no plugins configured\n';; esac
+        done
+    fi
+    local c x; c=$(find_cli claude); x=$(find_cli codex)
+    [ -n "$c" ] && { "$c" mcp get "$NAME" >/dev/null 2>&1 && pass "registered with Claude Code" || fail "not registered with Claude Code (omarchy-computer-use register)"; }
+    [ -n "$x" ] && { "$x" mcp get "$NAME" >/dev/null 2>&1 && pass "registered with Codex" || fail "not registered with Codex (omarchy-computer-use register)"; }
+    return $BAD
+}
+
+case "${1:-status}" in
+    status|doctor) doctor ;;
+    register) register ;;
+    update) git -C "$DIR" pull --ff-only && (cd "$DIR" && npm ci --no-audit --no-fund --loglevel=error) && register && doctor ;;
+    uninstall)
+        c=$(find_cli claude); x=$(find_cli codex)
+        [ -n "$c" ] && "$c" mcp remove -s user "$NAME" >/dev/null 2>&1
+        [ -n "$x" ] && "$x" mcp remove "$NAME" >/dev/null 2>&1
+        rm -f "$HOME/.local/bin/omarchy-computer-use"
+        echo "Unregistered and removed the command. Packages, the udev rule and $DIR are left in place." ;;
+    *) echo "usage: omarchy-computer-use [status|doctor|register|update|uninstall]"; exit 2 ;;
+esac

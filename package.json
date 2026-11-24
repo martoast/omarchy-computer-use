@@ -1,0 +1,19 @@
+{
+  "name": "omarchy-computer-use",
+  "version": "0.1.0",
+  "description": "Computer use for Omarchy (Hyprland): an MCP server that reads the Linux accessibility tree, the way screen readers do, and acts with virtual input.",
+  "license": "MIT",
+  "author": "Alex Martos",
+  "type": "module",
+  "main": "index.js",
+  "bin": { "omarchy-computer-use": "bin/omarchy-computer-use" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node index.js",
+    "selftest": "node bin/selftest.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}

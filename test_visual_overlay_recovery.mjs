@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { classifyVisualOverlayRecovery as classify } from "./visual_overlay_recovery.js";
+const base = { beforeContent: 0, expectedUrl: "https://shop.test/search?q=x", observedUrl: "https://shop.test/search?q=x", afterContent: 12, afterDialogs: 0 };
+assert.equal(classify(base).success, true);
+assert.equal(classify({ ...base, beforeContent: 1 }).reason, "page-was-already-readable");
+assert.equal(classify({ ...base, observedUrl: "https://evil.test/" }).reason, "document-changed");
+assert.equal(classify({ ...base, observedUrl: "https://shop.test/search?q=y" }).reason, "document-changed");
+assert.equal(classify({ ...base, afterDialogs: 1 }).reason, "accessible-dialog-remains");
+assert.equal(classify({ ...base, afterContent: 0 }).reason, "page-still-unreadable");
+console.log("PASS — visual overlay recovery classifier");
