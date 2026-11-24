@@ -962,6 +962,11 @@ def find_first_live(app, text_filter, role_filter):
 
     exact = [m for m in matches if is_exact(m)]
     ranked = exact if exact else matches
+    # PAGE BEFORE CHROME (live Bandcamp 2026-11-23): text "Close" on an open filter dialog hit Chromium's own title-bar
+    # Close first (the frame's toolbar precedes the document in tree order); the click gate rightly refused it, and the
+    # dialog's Close was never reached. When names tie, a control inside a page document wins over browser chrome.
+    # Stable sort: document order is kept within each group. Chrome is still found when the page has no such control.
+    ranked = sorted(ranked, key=lambda m: 0 if is_page_document(enclosing_document(m)) else 1)
     for m in ranked:
         if is_visibly_rendered(m):
             return m, len(matches)
