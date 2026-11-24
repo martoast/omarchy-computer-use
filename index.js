@@ -1003,6 +1003,8 @@ export function scrollRefusalFor(element) {
     return `Refused: ${element?.role ?? "element"} ${JSON.stringify(element?.name ?? "")} is ${surface}, so it was NOT scrolled. `
       + "Scrolling is only performed on page content. Call read_page and target an element from the page itself.";
   }
+  // Already fully visible (inside the page and every panel around it): nothing to scroll, and that is success.
+  if (element?.in_view === true) return null;
   if (element?.scrolled !== true) {
     return `Not scrolled: ${element?.role ?? "element"} ${JSON.stringify(element?.name ?? "")} is page content, but the accessibility `
       + "layer reported no scroll, so its position may be unchanged. Call read_page to see the current layout before relying on its coordinates.";
@@ -4262,8 +4264,8 @@ server.registerTool(
     title: "Hover over an element (open a hover menu)",
     description:
       "Move the real mouse pointer onto an element and keep it there, for menus, mega menus and tooltips that open on " +
-      "hover. Target by ref from read_page or by accessible name. Returns the elements that APPEARED because of the " +
-      "hover (with refs you can click next). The pointer stays put, so the menu stays open while you click inside it.",
+      "hover. Target by ref from read_page or by accessible name. Returns the elements and text (tooltips) that APPEARED " +
+      "because of the hover (with refs you can click next). The pointer stays put, so the menu stays open while you click inside it.",
     inputSchema: z.object({
       ref: z.string().optional().describe("A ref like 'e3' from a prior read_page call."),
       text: z.string().optional().describe("Accessible name to search for (case-insensitive substring), if not using ref."),
@@ -4279,15 +4281,20 @@ server.registerTool(
     if (element.doc_class && element.doc_class !== "page") {
       return { content: [{ type: "text", text: `Refused: ${element.role} "${element.name}" is not page content.` }], isError: true };
     }
-    const inWindow = element.cx >= win.at[0] && element.cx < win.at[0] + win.size[0] && element.cy >= win.at[1] && element.cy < win.at[1] + win.size[1];
+    // Only the real desktop reports true window geometry; a visible nested instance drawn at a scale reports the
+    // size it was spawned with while its page coordinates are in the scaled layout (measured: a link at x=1599 in a
+    // "1280-wide" instance, and moving there opened its menu). There the bridge's own visibility filter decides.
+    const inWindow = AUTOMATION_BACKEND === "headless" || (element.cx >= win.at[0] && element.cx < win.at[0] + win.size[0] && element.cy >= win.at[1] && element.cy < win.at[1] + win.size[1]);
     if (!inWindow) {
       return { content: [{ type: "text", text: `${element.role} "${element.name}" is outside the visible window (@${element.cx},${element.cy}); scroll_to_element first.` }], isError: true };
     }
     const key = (el) => `${el.role}|${el.name}|${el.href || ""}`;
-    const before = new Set(((await snapshotWindow(win, { limit: 400 })).elements || []).map(key));
+    // text included: a hover often shows a TOOLTIP, which is text, not a control (boardgamegeek.com The Hotness:
+    // the mark under a rank says "Unchanged Since Yesterday" only on hover)
+    const before = new Set(((await snapshotWindow(win, { limit: 500, includeText: true })).elements || []).map(key));
     await moveMouseRaw(element.cx, element.cy);
     await new Promise((r) => setTimeout(r, wait_ms));
-    const after = (await snapshotWindow(win, { limit: 400 })).elements || [];
+    const after = (await snapshotWindow(win, { limit: 500, includeText: true })).elements || [];
     const appeared = after.filter((el) => !before.has(key(el)) && el.ref);
     const head = `Hovering ${element.role} "${sanitizeInline(String(element.name || ""))}" @${element.cx},${element.cy}.`;
     if (!appeared.length) return { content: [{ type: "text", text: `${head} Nothing new appeared in the page's accessibility tree (if a menu is visible, read_page will show it; otherwise this element opens on click).` }] };
@@ -4324,7 +4331,7 @@ server.registerTool(
     const refusal = scrollRefusalFor(element);
     if (refusal) return { content: [{ type: "text", text: refusal }], isError: true };
     return {
-      content: [{ type: "text", text: `Scrolled to ${element.ref} ${element.role} "${element.name}" @${element.cx},${element.cy}` }],
+      content: [{ type: "text", text: `${element.in_view && !element.scrolled ? "Already in view" : "Scrolled to"} ${element.ref} ${element.role} "${element.name}" @${element.cx},${element.cy}` }],
     };
   }
 );

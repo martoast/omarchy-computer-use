@@ -1155,6 +1155,21 @@ def scroll_to_action(app, offset_x, offset_y, text_filter, role_filter, obj_path
             de = doc.get_component_iface().get_extents(Atspi.CoordType.WINDOW) if doc is not None else None
             in_view = bool(de and te.width > 0 and te.height > 0 and de.width > 0 and de.height > 0
                            and te.x >= de.x and te.y >= de.y and te.x + te.width <= de.x + de.width and te.y + te.height <= de.y + de.height)
+            # ...and inside every box between it and the document: a SCROLLABLE PANEL inside the page (a filter
+            # drawer, a dropdown list) clips its content, so an element can sit inside the page's box yet be cut off
+            # by its panel (careers.walmart.com "Support Services" in the Filters drawer, 2026-11-23: reported in
+            # view, never scrolled, never clicked). Any ancestor that doesn't contain it means: scroll.
+            cur, depth = target.get_parent(), 0
+            while in_view and cur is not None and depth < 40 and (doc is None or obj_path(cur) != obj_path(doc)):
+                try:
+                    ae = cur.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                    if ae.width > 0 and ae.height > 0 and not (
+                            te.x >= ae.x - 1 and te.y >= ae.y - 1 and te.x + te.width <= ae.x + ae.width + 1
+                            and te.y + te.height <= ae.y + ae.height + 1):
+                        in_view = False
+                except Exception:
+                    pass
+                cur, depth = cur.get_parent(), depth + 1
         except Exception:
             in_view = False
     if doc_class == "page" and not in_view:
@@ -1183,7 +1198,7 @@ def scroll_to_action(app, offset_x, offset_y, text_filter, role_filter, obj_path
         time.sleep(0.35)
     bounds = get_bounds(target, offset_x, offset_y)
     result = {"role": target.get_role_name(), "name": target.get_name(), "match_count": match_count,
-              "in_doc": is_in_document(target), "doc_class": doc_class, "scrolled": scrolled,
+              "in_doc": is_in_document(target), "doc_class": doc_class, "scrolled": scrolled, "in_view": in_view,
               "landmark": _nearest_landmark(target),
               "obj_path": obj_path(target), "doc_gen": doc_gen_of(target), **(bounds or {})}
     if target.get_role_name() == "link":
