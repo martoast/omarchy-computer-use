@@ -242,7 +242,7 @@ def icon_button_name(acc):
     try:
         comp = acc.get_component_iface()
         ext = comp.get_extents(Atspi.CoordType.WINDOW) if comp else None
-        if ext is None or ext.width <= 0 or ext.height <= 0 or ext.width > 64 or ext.height > 64:
+        if ext is None or ext.width <= 0 or ext.height <= 0 or ext.width > 64 * PAGE_SCALE or ext.height > 64 * PAGE_SCALE:
             return ""
         parent = acc.get_parent()
         idx = acc.get_index_in_parent()
@@ -259,7 +259,55 @@ def icon_button_name(acc):
     return ""
 
 
-def get_bounds(acc, offset_x, offset_y):
+# PAGE SCALE ON A SCALED DISPLAY (measured 2026-11-23, Omarchy laptop at Hyprland scale 1.5, Chromium 155): the
+# browser's own frame and toolbar report WINDOW extents in logical pixels, but the web page's document and
+# everything in it report DEVICE pixels -- a 1256-wide window held a 1884-wide page document, and a link drawn
+# at x=980 read as x=1470, so every coordinate click or hover on page content missed. The caller passes the
+# window's monitor scale; when the page document is measurably larger than its frame, page-content extents
+# are divided by it (and points going the other way multiplied). At scale 1, or when the browser already
+# reports logical pixels, PAGE_SCALE stays 1 and nothing changes.
+PAGE_SCALE = 1.0
+
+
+def detect_page_scale(app, monitor_scale):
+    """PAGE_SCALE for this app: monitor_scale when its page document reports device pixels, else 1."""
+    try:
+        if not monitor_scale or abs(float(monitor_scale) - 1.0) < 0.01:
+            return 1.0
+        for i in range(app.get_child_count()):
+            frame = app.get_child_at_index(i)
+            fc = frame.get_component_iface() if frame else None
+            if fc is None:
+                continue
+            fe = fc.get_extents(Atspi.CoordType.WINDOW)
+            if fe.width <= 0 or fe.height <= 0:
+                continue
+            stack = [(frame, 0)]
+            while stack:
+                cur, depth = stack.pop()
+                try:
+                    role = cur.get_role_name()
+                except Exception:
+                    continue
+                if role in ("document web", "document frame"):
+                    de = cur.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                    if de.width > 0 and de.height > 0:
+                        # the page sits inside its frame: wider or taller than the frame means device pixels
+                        if de.x + de.width > fe.width * 1.05 or de.y + de.height > fe.height * 1.05:
+                            return float(monitor_scale)
+                        return 1.0
+                    continue
+                if depth < 12:
+                    for j in range(cur.get_child_count() - 1, -1, -1):
+                        ch = cur.get_child_at_index(j)
+                        if ch is not None:
+                            stack.append((ch, depth + 1))
+    except Exception:
+        pass
+    return 1.0
+
+
+def get_bounds(acc, offset_x, offset_y, in_doc=None):
     try:
         comp = acc.get_component_iface()
         if not comp:
@@ -267,15 +315,19 @@ def get_bounds(acc, offset_x, offset_y):
         ex = comp.get_extents(Atspi.CoordType.WINDOW)
         if ex.width <= 0 or ex.height <= 0:
             return None
-        x = ex.x + offset_x
-        y = ex.y + offset_y
+        ex_x, ex_y, ex_w, ex_h = ex.x, ex.y, ex.width, ex.height
+        if PAGE_SCALE != 1.0 and (in_doc if in_doc is not None else is_in_document(acc)):
+            ex_x, ex_y = round(ex_x / PAGE_SCALE), round(ex_y / PAGE_SCALE)
+            ex_w, ex_h = max(1, round(ex_w / PAGE_SCALE)), max(1, round(ex_h / PAGE_SCALE))
+        x = ex_x + offset_x
+        y = ex_y + offset_y
         return {
             "x": x,
             "y": y,
-            "w": ex.width,
-            "h": ex.height,
-            "cx": x + ex.width // 2,
-            "cy": y + ex.height // 2,
+            "w": ex_w,
+            "h": ex_h,
+            "cx": x + ex_w // 2,
+            "cy": y + ex_h // 2,
         }
     except Exception:
         return None
@@ -531,7 +583,8 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
             pre_role = (not role_filter) or (role == role_filter) or (role in role_set) or (
                 loose_roles and role_filter in ("button", "link") and role in ("button", "link", "push button")) or (
                 dialog_contents and role_filter == "dialog" and in_dialog)
-            bounds = get_bounds(acc, offset_x, offset_y) if (pre_text and pre_role) else None
+            bounds = ((get_bounds(acc, offset_x, offset_y) if PAGE_SCALE == 1.0 else get_bounds(acc, offset_x, offset_y, in_doc))
+                      if (pre_text and pre_role) else None)
             # Skip off-canvas screen-reader-only elements (e.g. a
             # "position: absolute; top: -9999px" skip-link or a decoy
             # landmark heading reused across every page of a site) --
@@ -2892,6 +2945,46 @@ def classify_close_affordance(name, role, actions):
     return {"ok": True, "reason": "close_affordance", "index": allowed[0]["index"], "action": allowed[0]["name"]}
 
 
+def _same_box_dialogs(dialogs):
+    """The innermost dialog plus every enclosing dialog that is the SAME dialog on screen: drawn at the same
+    rectangle (within 4 px), or a pure wrapper -- a backdrop whose only content is the dialog inside it (every
+    node between the two has exactly one child). instructure.com's language prompt, 2026-11-23: a full-page
+    role=dialog backdrop with one child, the role=dialog box with the Close button."""
+    out = [dialogs[0]] if dialogs else []
+    try:
+        inner = dialogs[0]
+        try:
+            ie = inner.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+        except Exception:
+            ie = None
+        for d in dialogs[1:]:
+            same = False
+            try:
+                e = d.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+                same = ie is not None and ie.width > 0 and max(abs(e.x - ie.x), abs(e.y - ie.y), abs(e.width - ie.width), abs(e.height - ie.height)) <= 4
+            except Exception:
+                same = False
+            if not same:
+                # pure wrapper: walk up from the current inner dialog to d; every node on the way holds one child
+                cur, ok, depth = inner.get_parent(), True, 0
+                while cur is not None and depth < 30:
+                    if cur.get_child_count() != 1:
+                        ok = False
+                        break
+                    if obj_path(cur) == obj_path(d):
+                        break
+                    cur = cur.get_parent()
+                    depth += 1
+                same = ok and cur is not None and obj_path(cur) == obj_path(d)
+            if not same:
+                break
+            out.append(d)
+            inner = d
+    except Exception:
+        pass
+    return out
+
+
 def _dialog_ancestors(acc):
     out = []
     cur = acc
@@ -3135,7 +3228,12 @@ def dismiss_dialog_action(app, obj_path_arg, doc_gen_arg, role_filter=None,
     dialogs = _dialog_ancestors(node)
     if not dialogs:
         return {"refused": True, "invocation_count": 0, "reason": "not_inside_a_dialog", "role": role, "name": name}
-    if len(dialogs) > 1:
+    # A dialog WRAPPED in another dialog node of the same box (a site's modal component plus its inner
+    # role="dialog": instructure.com's language prompt, 2026-11-23, two DIALOG-ROOTs at one rectangle) is ONE
+    # dialog on screen; its close control closes both. Only dialogs that are visibly different boxes make the
+    # choice ambiguous.
+    same_box = _same_box_dialogs(dialogs)
+    if len(dialogs) - len(same_box) + 1 > 1:
         # Nested dialogs: which one this control closes is genuinely ambiguous.
         return {"refused": True, "invocation_count": 0, "reason": "ambiguous_dialog_ancestry", "role": role, "name": name,
                 "dialog_count": len(dialogs)}
@@ -3147,7 +3245,7 @@ def dismiss_dialog_action(app, obj_path_arg, doc_gen_arg, role_filter=None,
             return {"refused": True, "invocation_count": 0,
                     "reason": "expected_dialog_stale", "status": expected_status,
                     "role": role, "name": name}
-        if not is_dialog_node(expected) or obj_path(dialog) != obj_path(expected):
+        if not is_dialog_node(expected) or obj_path(expected) not in {obj_path(d) for d in same_box}:
             return {"refused": True, "invocation_count": 0,
                     "reason": "expected_dialog_mismatch", "role": role, "name": name}
     dlg_doc = enclosing_document(dialog)
@@ -3674,7 +3772,8 @@ def hit_point_action(app, offset_x, offset_y, text_filter, role_filter, obj_path
         return {"status": "no_document"}
     # Window coordinates for the hit test; the centre first, then inner points
     # (a centred child label is fine, a badge over the centre is not).
-    wx, wy, w, h = b["x"] - offset_x, b["y"] - offset_y, b["w"], b["h"]
+    # b is in logical screen pixels; the document's hit test speaks its own (device) window pixels
+    wx, wy, w, h = (b["x"] - offset_x) * PAGE_SCALE, (b["y"] - offset_y) * PAGE_SCALE, b["w"] * PAGE_SCALE, b["h"] * PAGE_SCALE
     fractions = [(0.5, 0.5), (0.3, 0.5), (0.7, 0.5), (0.5, 0.3), (0.5, 0.7)]
     last_hit = None
     for fx, fy in fractions:
@@ -3693,12 +3792,12 @@ def hit_point_action(app, offset_x, offset_y, text_filter, role_filter, obj_path
                 owned = True
                 break
         if owned:
-            return {"status": "owned", "x": px + offset_x, "y": py + offset_y,
+            return {"status": "owned", "x": round(px / PAGE_SCALE) + offset_x, "y": round(py / PAGE_SCALE) + offset_y,
                     "role": target.get_role_name(), "name": (target.get_name() or "")[:120]}
         try:
             # The point that was tested rides along: a covering pop-up BACKDROP ("Close Dialog" spanning the screen)
             # is closed by a real click on it, and this point is provably the backdrop's.
-            last_hit = {"role": cur.get_role_name(), "name": (cur.get_name() or "")[:80], "x": px + offset_x, "y": py + offset_y}
+            last_hit = {"role": cur.get_role_name(), "name": (cur.get_name() or "")[:80], "x": round(px / PAGE_SCALE) + offset_x, "y": round(py / PAGE_SCALE) + offset_y}
         except Exception:
             last_hit = None
     return {"status": "not_owned", "hit": last_hit}
@@ -3797,7 +3896,7 @@ def element_at_action(app, offset_x, offset_y, x, y):
     doc = next((d for d in docs if is_page_document(d)), None)
     if doc is None:
         return {"chain": [], "status": "no_document"}
-    wx, wy = int(x) - int(offset_x), int(y) - int(offset_y)
+    wx, wy = int((int(x) - int(offset_x)) * PAGE_SCALE), int((int(y) - int(offset_y)) * PAGE_SCALE)
     chain, cur = [], doc
     for _ in range(60):
         try:
@@ -4275,6 +4374,9 @@ def main():
             "elements": [],
         }))
         return
+
+    global PAGE_SCALE
+    PAGE_SCALE = detect_page_scale(app, cmd.get("monitor_scale"))
 
     if action == "scroll_to":
         print(json.dumps(scroll_to_action(app, offset_x, offset_y, text_filter, role_filter, obj_path_arg, doc_gen_arg)))

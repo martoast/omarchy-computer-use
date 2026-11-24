@@ -384,6 +384,11 @@ export function cleanHrefDirectEligible(href, currentPageUrl = null) {
     if (currentPageUrl != null) {
       const current = new URL(currentPageUrl);
       if (current.origin !== url.origin) return false;
+      // A link to THIS document (href="#", "#section", or the page's own address) is not a navigation: it is an
+      // in-page anchor or a control the page's script handles (a mega-menu opener like instructure.com's
+      // "About Us", href="#"). Loading it in the address bar changes nothing and never opens the menu; it must be
+      // activated like a button.
+      if (current.origin === url.origin && current.pathname === url.pathname && current.search === url.search) return false;
     }
     // Macy's product tiles expose slug-only hrefs that 404 when loaded
     // directly; their page action supplies the product identity/router state.

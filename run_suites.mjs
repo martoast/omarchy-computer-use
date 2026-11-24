@@ -37,7 +37,7 @@ const only = args.filter((a) => !a.startsWith("--"));
 // they are the cheapest way to fail fast before paying for any instance.
 const PURE_JS = ["test_dialog_dismissal.mjs", "test_action_routing.mjs", "test_transition_signals.mjs",
                  "test_navigation_recovery.mjs", "test_input_safety.mjs", "test_tree_priority.mjs",
-                 "test_suite_policy.mjs"];
+                 "test_suite_policy.mjs", "test_clean_href.mjs"];
 // Every Python test here is a pure accessibility-bridge test.
 const PURE_PY = readdirSync(".").filter((f) => /^test_.*\.py$/.test(f)).sort();
 const LIVE = only.length ? only : readdirSync(".")

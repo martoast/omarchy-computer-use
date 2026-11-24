@@ -57,6 +57,7 @@ Using another MCP client? Point it at `node ~/.local/share/omarchy-computer-use/
 | **Act on elements** | `click_element`, `press_element`, `type_into_element`, `select_option`, `read_selected_option`, `focus_field`, `scroll_to_element`, `check_field_values` |
 | **Wait** | `wait_for_element`, `wait_page_settled`, `read_after_navigation` |
 | **Get unstuck** | `dismiss_dialog` (cookie/consent and pop-up overlays), `escape_page`, `recover_visual_overlay` |
+| **Menus** | `hover_element` (opens hover menus and mega menus, returns the links that appeared) |
 | **Windows** | `list_windows`, `get_active_window`, `focus_window`, `get_active_workspace`, `move_window_to_workspace` |
 | **Raw input** | `click`, `move_mouse`, `scroll`, `type_text`, `key_press`, `pointer_button`, `focus_editable_at` |
 | **Site memory** | `get_site_map`, `save_site_map`, `list_known_sites` |

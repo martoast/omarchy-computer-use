@@ -632,7 +632,25 @@ async function atspiBridge(cmd) {
   finally { if (timingStart) console.error(`[bridge] ${cmd?.action || "snapshot"} ${Date.now() - timingStart}ms`); }
 }
 
+// The monitor scale of the window a bridge call reads (atspi_bridge.py PAGE_SCALE: on a scaled display Chromium
+// reports page content in device pixels). Cached briefly; any failure means 1, which changes nothing.
+let monitorScaleCache = { at: 0, byPid: new Map() };
+async function monitorScaleForPid(pid) {
+  if (AUTOMATION_BACKEND !== "hyprland" || !pid) return 1;
+  if (Date.now() - monitorScaleCache.at > 3000) {
+    try {
+      const [clients, monitors] = await Promise.all([run("hyprctl", ["clients", "-j"]), run("hyprctl", ["monitors", "-j"])]);
+      const scaleOf = new Map(JSON.parse(monitors.stdout).map((m) => [m.id, Number(m.scale) || 1]));
+      const byPid = new Map();
+      for (const c of JSON.parse(clients.stdout)) if (!byPid.has(c.pid)) byPid.set(c.pid, scaleOf.get(c.monitor) ?? 1);
+      monitorScaleCache = { at: Date.now(), byPid };
+    } catch { return 1; }
+  }
+  return monitorScaleCache.byPid.get(pid) ?? 1;
+}
+
 async function atspiBridgeCall(cmd) {
+  if (cmd && cmd.pid && cmd.monitor_scale === undefined) cmd = { ...cmd, monitor_scale: await monitorScaleForPid(cmd.pid) };
   const scriptPath = path.join(import.meta.dirname, "atspi_bridge.py");
   const stdout = await new Promise((resolve, reject) => {
     const child = spawn("python3", [scriptPath], { env: process.env });
@@ -4232,6 +4250,49 @@ server.registerTool(
       ...(navUnverified || (press_enter && !submitSafe(found)) ? { isError: true } : {}),
     };
   }
+);
+
+// HOVER (2026-11-23, Online-Mind2Web "find the earliest press release" on instructure.com): the way to Press
+// Releases is a mega menu that opens on HOVER from "About Us" (href="#"). Clicking it did nothing and the agent
+// fell back to guessing URLs. Hover is a first-class action: point at the element, let the page react, and say
+// what appeared — the menu's links come back in the same call, with refs, so the next step can click one.
+server.registerTool(
+  "hover_element",
+  {
+    title: "Hover over an element (open a hover menu)",
+    description:
+      "Move the real mouse pointer onto an element and keep it there, for menus, mega menus and tooltips that open on " +
+      "hover. Target by ref from read_page or by accessible name. Returns the elements that APPEARED because of the " +
+      "hover (with refs you can click next). The pointer stays put, so the menu stays open while you click inside it.",
+    inputSchema: z.object({
+      ref: z.string().optional().describe("A ref like 'e3' from a prior read_page call."),
+      text: z.string().optional().describe("Accessible name to search for (case-insensitive substring), if not using ref."),
+      role: z.string().optional().describe("Narrow a text search to this role, e.g. 'link', 'button'."),
+      window_address: z.string().optional(),
+      wait_ms: z.number().int().min(0).max(5000).default(900).describe("How long to let the page react before reading what appeared."),
+    }).strict(),
+  },
+  async ({ ref, text, role, window_address, wait_ms }) => {
+    if (!ref && !text) return { content: [{ type: "text", text: "hover_element needs a ref or text." }], isError: true };
+    const win = await resolveWindow(window_address);
+    const { element } = await resolveElement({ ref, text, role, win });
+    if (element.doc_class && element.doc_class !== "page") {
+      return { content: [{ type: "text", text: `Refused: ${element.role} "${element.name}" is not page content.` }], isError: true };
+    }
+    const inWindow = element.cx >= win.at[0] && element.cx < win.at[0] + win.size[0] && element.cy >= win.at[1] && element.cy < win.at[1] + win.size[1];
+    if (!inWindow) {
+      return { content: [{ type: "text", text: `${element.role} "${element.name}" is outside the visible window (@${element.cx},${element.cy}); scroll_to_element first.` }], isError: true };
+    }
+    const key = (el) => `${el.role}|${el.name}|${el.href || ""}`;
+    const before = new Set(((await snapshotWindow(win, { limit: 400 })).elements || []).map(key));
+    await moveMouseRaw(element.cx, element.cy);
+    await new Promise((r) => setTimeout(r, wait_ms));
+    const after = (await snapshotWindow(win, { limit: 400 })).elements || [];
+    const appeared = after.filter((el) => !before.has(key(el)) && el.ref);
+    const head = `Hovering ${element.role} "${sanitizeInline(String(element.name || ""))}" @${element.cx},${element.cy}.`;
+    if (!appeared.length) return { content: [{ type: "text", text: `${head} Nothing new appeared in the page's accessibility tree (if a menu is visible, read_page will show it; otherwise this element opens on click).` }] };
+    return { content: [{ type: "text", text: `${head} ${appeared.length} element(s) appeared:\n${formatElements(appeared.slice(0, 60))}` }] };
+  },
 );
 
 server.registerTool(

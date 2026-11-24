@@ -89,11 +89,15 @@ def check(label, cond, detail=""):
 
 
 def app_with(dialog_children, dialog_attrs=None, dialog_role="dialog", uri="https://store.test/p",
-             outside=(), nested=False):
-    """A window -> page document -> [background content] + dialog(...)."""
+             outside=(), nested=False, wrapper=False):
+    """A window -> page document -> [background content] + dialog(...).
+    nested: the dialog sits inside ANOTHER dialog that has content of its own (a real dialog-over-dialog).
+    wrapper: the dialog sits inside a dialog node whose ONLY child it is (a modal backdrop wrapper)."""
     dlg = Node(dialog_role, "TheModal", attrs=dialog_attrs or {}, children=list(dialog_children))
     if nested:
-        dlg = Node("dialog", "OuterModal", children=[dlg])
+        dlg = Node("dialog", "OuterModal", children=[Node("link", "OuterFormLink"), dlg])
+    if wrapper:
+        dlg = Node("dialog", "", children=[dlg])
     doc = Node("document web", "", children=[*outside, dlg], uri=uri)
     return Node("frame", "win", children=[doc]), dlg
 
@@ -137,6 +141,12 @@ def refusal(label, control, app, want_reason):
 b = Node("button", "Close", actions=PRESS)
 app, _ = app_with([b], nested=True)
 refusal("a close control inside TWO dialogs", b, app, "ambiguous_dialog_ancestry")
+
+# A backdrop dialog node whose only child is the real dialog (instructure.com, 2026-11-23) is ONE dialog.
+b = Node("button", "Close", actions=PRESS)
+app, _ = app_with([b], wrapper=True, outside=[Node("link", "StoreLink")])
+r = run(app, b)
+check("a close control inside a dialog WRAPPED by a one-child backdrop dialog is invoked", r.get("invoked") is True, r)
 
 b = Node("button", "Close", actions=["press", "click"])
 app, _ = app_with([b])
