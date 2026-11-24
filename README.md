@@ -74,6 +74,16 @@ Elements are addressed by a `ref` from `read_page` (`e42`) or by their accessibl
 - It never reads saved-card numbers or the browser's saved-address dropdown text.
 - It drives your real desktop: the mouse and keyboard move while it works. For unattended work use the headless mode.
 
+## Compact observations and speed switches
+
+- `COMPUTER_USE_READ_FORMAT=compact` (or `read_page` with `format: "compact"`): the page as a normalized
+  observation, one fixed shape on every site (closed role vocabulary, page regions, duplicates merged, a third to
+  three quarters of the classic size), and every action result starts with one `LAST … -> ok|no_change|unverified|
+  refused|failed|blocked` line. `COMPUTER_USE_OBSERVATION=1` also returns both as structured objects. Spec:
+  [OBSERVATION.md](OBSERVATION.md).
+- `COMPUTER_USE_PERSISTENT_BRIDGE=1`: keep a few accessibility-bridge processes alive instead of starting one per
+  call (each start costs 125-170 ms before any work, several times per action).
+
 ## Headless mode
 
 `AUTOMATION_BACKEND=headless` drives an isolated nested sway compositor with its own Chromium profile instead of your

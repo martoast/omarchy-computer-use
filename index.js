@@ -49,6 +49,7 @@ import { readFile, writeFile, unlink, readdir, stat, mkdir } from "node:fs/promi
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { observe, renderObservation, actionOutcome, renderOutcome } from "./observation.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -649,8 +650,72 @@ async function monitorScaleForPid(pid) {
   return monitorScaleCache.byPid.get(pid) ?? 1;
 }
 
+// PERSISTENT BRIDGE (COMPUTER_USE_PERSISTENT_BRIDGE=1, 2026-11-24): a small pool of long-lived `atspi_bridge.py --serve`
+// workers instead of one python process per call (125-170 ms of startup each on an idle 2-core laptop, 1-3 s under a
+// loading page, 4-8 calls per action). One request per worker at a time; a busy pool grows to BRIDGE_POOL_MAX and
+// idle workers are reused. A worker that dies, hangs past its deadline or answers garbage is killed and its call fails
+// with that error (never re-sent: it may already have acted); the next call gets a fresh worker.
+const BRIDGE_POOL_MAX = 3;
+const BRIDGE_CALL_DEADLINE_MS = 120_000;
+const bridgePool = [];
+let bridgeReqSeq = 0;
+function bridgeWorker() {
+  const idle = bridgePool.find((w) => !w.busy && !w.dead);
+  if (idle) return idle;
+  if (bridgePool.filter((w) => !w.dead).length >= BRIDGE_POOL_MAX) return null;
+  const child = spawn("python3", [path.join(import.meta.dirname, "atspi_bridge.py"), "--serve"], { env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+  const w = { child, busy: false, dead: false, buf: "", pending: null };
+  const fail = (why) => {
+    if (w.dead) return;
+    w.dead = true;
+    try { child.kill("SIGKILL"); } catch {}
+    const i = bridgePool.indexOf(w); if (i >= 0) bridgePool.splice(i, 1);
+    if (w.pending) { const p = w.pending; w.pending = null; clearTimeout(p.timer); p.reject(new Error(`atspi_bridge.py worker ${why}`)); }
+  };
+  child.on("error", () => fail("failed to start"));
+  child.on("exit", () => fail("exited"));
+  child.stdin.on("error", () => fail("stdin closed"));
+  child.stderr.on("data", () => {}); // drain
+  child.stdout.on("data", (d) => {
+    w.buf += d;
+    let nl;
+    while ((nl = w.buf.indexOf("\n")) >= 0) {
+      const line = w.buf.slice(0, nl); w.buf = w.buf.slice(nl + 1);
+      let msg; try { msg = JSON.parse(line); } catch { fail("sent garbage"); return; }
+      const p = w.pending;
+      if (!p || msg.id !== p.id) { fail("answered out of order"); return; }
+      w.pending = null; w.busy = false; clearTimeout(p.timer);
+      if (msg.error) p.reject(new Error(`atspi_bridge.py exited 1: ${msg.error}`));
+      else p.resolve(msg.out);
+    }
+  });
+  child.unref?.(); child.stdin.unref?.(); child.stdout.unref?.(); child.stderr.unref?.();
+  bridgePool.push(w);
+  return w;
+}
+function bridgeCallPooled(cmd) {
+  const w = bridgeWorker();
+  if (!w) return null; // pool full: the caller takes the one-shot path
+  w.busy = true;
+  const id = ++bridgeReqSeq;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { if (w.pending?.id === id) { w.pending = null; reject(new Error("atspi_bridge.py worker passed its deadline")); } try { w.child.kill("SIGKILL"); } catch {} }, BRIDGE_CALL_DEADLINE_MS);
+    w.pending = { id, resolve, reject, timer };
+    const env = { COMPUTER_USE_TEST_NO_OBJPATH: process.env.COMPUTER_USE_TEST_NO_OBJPATH ?? null };
+    w.child.stdin.write(JSON.stringify({ id, cmd, env }) + "\n");
+  });
+}
+process.on("exit", () => { for (const w of bridgePool) { try { w.child.kill("SIGKILL"); } catch {} } });
+
 async function atspiBridgeCall(cmd) {
   if (cmd && cmd.pid && cmd.monitor_scale === undefined) cmd = { ...cmd, monitor_scale: await monitorScaleForPid(cmd.pid) };
+  if (process.env.COMPUTER_USE_PERSISTENT_BRIDGE === "1") {
+    // NEVER RETRIED once sent: the request may already have clicked or typed, and a second process would act twice.
+    // A worker fault after dispatch surfaces as an error, exactly like a one-shot process that crashed; only a full
+    // pool (nothing sent) takes the one-shot path.
+    const pooled = bridgeCallPooled(cmd);
+    if (pooled) return enrichBridgeResult(JSON.parse(await pooled), AUTOMATION_BACKEND);
+  }
   const scriptPath = path.join(import.meta.dirname, "atspi_bridge.py");
   const stdout = await new Promise((resolve, reject) => {
     const child = spawn("python3", [scriptPath], { env: process.env });
@@ -1607,7 +1672,8 @@ async function recordVisit(win, elements, pageInfo) {
     if (!domain) return;
     const now = new Date().toISOString();
     if (siteMemoryBackend?.recordVisit) {
-      const eligible = elements.filter((el) => isSiteMemoryEligible(el) && !isUnrememberableName(el.name));
+      // text_value (what is typed in a field) never reaches site memory: labels and links only, as the README promises
+      const eligible = elements.filter((el) => isSiteMemoryEligible(el) && !isUnrememberableName(el.name)).map(({ text_value, ...el }) => el);
       try { if (await siteMemoryBackend.recordVisit(domain, eligible, { title: pageInfo.title || null, url: pageInfo.url, at: now })) return; } catch { /* fall back to the JSON record */ }
     }
     const map = scrubPrivateLocators((await loadSiteMap(domain)) || emptySiteMap(domain));
@@ -1724,8 +1790,28 @@ server.registerTool = (name, def, handler) =>
       latestScreenshotContext = null;
       submitTokens.invalidateAll();
     }
-    return result;
+    return withNormalizedOutcome(name, args[0], result);
   });
+
+// NORMALIZED OUTCOME (observation.mjs): every action's result as one closed enum + what changed, the same for every tool.
+// compact format: a fixed first line ("LAST click_element e65 -> ok (dialogs=1)"); COMPUTER_USE_OBSERVATION=1: the object
+// in structuredContent. Off in the default text format, so existing callers read exactly what they read before.
+const OUTCOME_TOOLS = new Set(["click_element", "press_element", "type_into_element", "select_option", "scroll_to_element", "hover_element",
+  "dismiss_dialog", "escape_page", "key_press", "click", "scroll", "type_text", "focus_field"]);
+function withNormalizedOutcome(name, args, result) {
+  if (!OUTCOME_TOOLS.has(name) || !result || !Array.isArray(result.content)) return result;
+  const compact = process.env.COMPUTER_USE_READ_FORMAT === "compact";
+  const structured = process.env.COMPUTER_USE_OBSERVATION === "1";
+  if (!compact && !structured) return result;
+  let o; try { o = actionOutcome(name, result, args || {}); } catch { return result; }
+  const out = { ...result };
+  if (compact) {
+    const i = out.content.findIndex((c) => c.type === "text");
+    out.content = out.content.map((c, k) => (k === i ? { ...c, text: `${renderOutcome(o)}\n${c.text}` } : c));
+  }
+  if (structured) out.structuredContent = { ...(result.structuredContent || {}), outcome: o };
+  return out;
+}
 server.registerTool(
   "screenshot",
   {
@@ -2647,6 +2733,7 @@ server.registerTool(
         .default(false)
         .describe("Also include static text/paragraphs/headings for reading page content, not just interactive elements."),
       limit: z.number().int().min(1).max(500).default(80),
+      format: z.enum(["text", "compact"]).optional().describe("'compact': the normalized observation (one line per element: ref, role, name, value, states; grouped by page region; duplicates merged). Default: COMPUTER_USE_READ_FORMAT or 'text'."),
       start_at_ref: z.string().optional().describe("Read from this ref (from the previous read_page) onward, in page order — e.g. a product's heading, to read a buy box that sits past the row limit."),
       filter_state: z
         .enum(["checked", "pressed", "selected", "focused", "expanded", "disabled"])
@@ -2659,7 +2746,7 @@ server.registerTool(
           "identical here."),
     }).strict(),
   },
-  readPageHandler = async ({ window_address, filter_text, filter_role, filter_state, include_text, limit, start_at_ref }) => {
+  readPageHandler = async ({ window_address, filter_text, filter_role, filter_state, include_text, limit, start_at_ref, format }) => {
     const roleError = validateRole(filter_role);
     if (roleError) return { content: [{ type: "text", text: roleError }], isError: true };
     const win = await resolveWindow(window_address);
@@ -2865,8 +2952,15 @@ server.registerTool(
     // the only server-attested URL statement and is never derived from it.
     const urlMarker = formatPageUrlMarker(snap.page?.url);
     const header = snap.page?.title || snap.page?.url ? `# ${sanitizeInline(snap.page.title || "")}${snap.page.url ? ` (${sanitizeInline(snap.page.url)})` : ""}\n` : "";
+    // The normalized observation (observation.mjs): one fixed shape for every site. `compact` renders it as the answer;
+    // COMPUTER_USE_OBSERVATION=1 also attaches the object itself (structuredContent) for a local executor / training log.
+    const fmt = format || process.env.COMPUTER_USE_READ_FORMAT || "text";
+    const wantObs = fmt === "compact" || process.env.COMPUTER_USE_OBSERVATION === "1";
+    const obs = wantObs ? observe(snap, { viewport: AUTOMATION_BACKEND === "headless" ? null : { top: win.at[1], bottom: win.at[1] + win.size[1] } }) : null;
+    const body = fmt === "compact" ? renderObservation(obs) : urlMarker + (snap.page?.busy ? PAGE_LOADING_NOTE : "") + header + formatElements(snap.elements);
     return {
-      content: [{ type: "text", text: recoveryNote + knownHint + urlMarker + (snap.page?.busy ? PAGE_LOADING_NOTE : "") + header + formatElements(snap.elements) }],
+      content: [{ type: "text", text: recoveryNote + knownHint + body }],
+      ...(process.env.COMPUTER_USE_OBSERVATION === "1" && obs ? { structuredContent: { observation: obs } } : {}),
       ...(recoveryFailed ? { isError: true } : {}),
     };
   }
@@ -2980,13 +3074,13 @@ async function observeAfterClick(args, result) {
       let prev = null;
       for (let i = 0; i < 6; i++) {
         await new Promise((r) => setTimeout(r, 450));
-        page = await readPageHandler({ window_address: args.window_address, filter_text: "", filter_role: "dialog", include_text: true, limit: 150 });
+        page = await readPageHandler({ window_address: args.window_address, filter_text: "", filter_role: "dialog", include_text: true, limit: 150, format: "text" });
         const now = rowsOf(page);
         if (prev !== null && now === prev && now.length > 0) break;
         prev = now;
       }
     }
-    if (!page && readPageHandler) page = await readPageHandler({ window_address: args.window_address, filter_text: "", filter_role: "", include_text: true, limit: 300 });
+    if (!page && readPageHandler) page = await readPageHandler({ window_address: args.window_address, filter_text: "", filter_role: "", include_text: true, limit: 300, format: "text" });
     if (!page) return result;
     const text = (page.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
     if (!text) return result;
@@ -3501,8 +3595,9 @@ server.registerTool(
     title: "Wait until the page has finished loading (event-driven)",
     description:
       "Wait until the page on screen has finished loading: its document is no longer busy and the browser has " +
-      "announced no structural change for quiet_ms. Event-driven (the browser's own accessibility notifications), not " +
-      "a fixed sleep. Returns {settled, reason, ms, ready_ms, events}. Read-only.",
+      "announced no structural change for quiet_ms (reason 'quiet'), or it has been ready for 2.5 s while a carousel or " +
+      "ticker keeps changing it (reason 'usable_changing': usable, but parts move). Event-driven (the browser's own " +
+      "accessibility notifications), not a fixed sleep. Returns {settled, reason, ms, ready_ms, events}. Read-only.",
     inputSchema: z.object({
       window_address: z.string().optional(),
       quiet_ms: z.number().int().min(100).max(5000).default(800),
@@ -3514,7 +3609,7 @@ server.registerTool(
   },
   async ({ window_address, quiet_ms, max_ms, url_contains, title_contains, not_doc }) => {
     const win = await resolveWindow(window_address);
-    const res = await atspiBridge({ pid: win.pid, action: "wait_settled", quiet_ms, max_ms, ...(url_contains ? { url_contains } : {}), ...(title_contains ? { title_contains } : {}), ...(not_doc ? { not_doc } : {}), ...(AUTOMATION_BACKEND === "headless" ? { placeholder_focus_ok: true } : {}) }).catch((e) => ({ settled: false, reason: e.message }));
+    const res = await atspiBridge({ pid: win.pid, action: "wait_settled", quiet_ms, max_ms, ...(url_contains ? { url_contains } : {}), ...(title_contains ? { title_contains } : {}), ...(not_doc ? { not_doc } : {}), ...(AUTOMATION_BACKEND === "headless" ? { placeholder_focus_ok: true } : {}), ...(process.env.COMPUTER_USE_SETTLE_USABLE_WHILE_LOADING === "1" ? { usable_while_loading: true } : {}) }).catch((e) => ({ settled: false, reason: e.message }));
     // LOG ONLY (lead 2026-10-04): a settle that ran to max_ms on a document still loading but already populated and quiet — a day
     // of per-store counts decides whether settle may rely on the populated document instead of load-complete. Not in the answer.
     if (res && res.would_have_settled_ms != null) {

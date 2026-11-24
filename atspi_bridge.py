@@ -463,6 +463,45 @@ def get_states(acc):
     return names
 
 
+_XML_ROLE_TO_REGION = {
+    "banner": "header", "navigation": "nav", "search": "search", "main": "main",
+    "contentinfo": "footer", "complementary": "aside",
+}
+
+
+def _landmark_region(acc):
+    """observation.mjs region for a `landmark` node, from its ARIA xml-roles (Chromium maps <header>, <nav>, <main>,
+    <footer>, <aside> and role=search to role `landmark`). None for a landmark we do not name (region, form)."""
+    try:
+        attrs = dict(acc.get_attributes() or {})
+    except Exception:
+        return None
+    return _XML_ROLE_TO_REGION.get((attrs.get("xml-roles") or "").split(" ")[0])
+
+
+# Fields whose contents are never read back, by their accessible name (the role already excludes `password text`).
+_SECRET_FIELD = re.compile(r"card|cvv|cvc|security code|expir|password|passcode|pin\b|ssn|social security|account number|routing", re.I)
+
+
+def field_text_value(acc, name=""):
+    """PURE-ish: the visible text in an entry, capped at 120 chars, or None (no text interface, empty, or a field that
+    must never be read: payment, password, identity numbers)."""
+    if _SECRET_FIELD.search(name or ""):
+        return None
+    try:
+        ti = acc.get_text_iface()
+        if not ti:
+            return None
+        n = ti.get_character_count()
+        if not n:
+            return None
+        txt = ti.get_text(0, min(n, 120))
+    except Exception:
+        return None
+    txt = (txt or "").strip()
+    return txt or None
+
+
 def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, limit, state_filter=None, dialog_contents=False, loose_roles=False, start_path=None, anchor=None, page_url_known=None):
     # SEVERAL ROLES IN ONE WALK ("entry|combo box|button", 2026-10-08): a checkout form read was three whole-page walks (~0.9 s
     # each, twice per address fill); the tree is walked once and each role matched.
@@ -492,7 +531,7 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
     except Exception:
         current_host = None
 
-    def visit(acc, depth, in_doc=False, doc_gen=None, doc_class="unknown", in_dialog=False):
+    def visit(acc, depth, in_doc=False, doc_gen=None, doc_class="unknown", in_dialog=False, region=None):
         if len(results) >= limit or depth > 40:
             return
         try:
@@ -500,6 +539,10 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
         except Exception:
             return
         name = ""  # read below, only for a node this read can return
+        # REGION (observation.mjs, 2026-11-24): the nearest ARIA landmark travels down the walk, one attribute read per
+        # landmark node only (a page has a handful), so every element knows whether it sits in the header, nav, main...
+        if role == "landmark":
+            region = _landmark_region(acc) or region
         # The enclosing document node's OBJECT PATH is the "generation" token
         # (issue #5): it changes on reload/navigation, so a ref captured on a
         # prior document fails stale even if an element object path is later
@@ -683,6 +726,14 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
                     # this: the omnibox dropdown is itself a document web, so it
                     # reports in_doc=true while being browser UI.
                     entry["doc_class"] = doc_class if in_doc else "chrome"
+                    if region and in_doc:
+                        entry["region"] = region
+                    # A text box's CURRENT CONTENTS (observation.mjs): whether the search box is already filled is the most
+                    # common thing a model re-reads a page to learn. Never a password or a payment field.
+                    if role in ("entry", "spin button") and in_doc:
+                        tv = field_text_value(acc, name)
+                        if tv is not None:
+                            entry["text_value"] = tv
                     if in_dialog:
                         entry["in_dialog"] = True
                     # Only the root carries this, so counting/enumerating
@@ -703,7 +754,7 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
             except Exception:
                 continue
             if child is not None:
-                visit(child, depth + 1, in_doc, doc_gen, doc_class, in_dialog)
+                visit(child, depth + 1, in_doc, doc_gen, doc_class, in_dialog, region)
 
     visit(app, 0)
     return results
@@ -1696,12 +1747,25 @@ def first_page_document(app, depth_limit=20):
     return None
 
 
-def settle_verdict(state, quiet_for_ms, elapsed_ms, quiet_ms, max_ms):
+# READY BUT NEVER QUIET (2026-11-24, measured one task at a time on omarchy-1): CarMax's home page was ready (not BUSY,
+# populated) 103 ms after the call and then changed 1,440 times in 15 s (carousels, live counters), so "quiet for
+# 800 ms" never came and every settle ran to max_ms. A page ready and populated for this long is usable; it answers
+# settled with reason "usable_changing", so the caller knows the page still moves.
+USABLE_CHANGING_MS = 2500
+
+
+def settle_verdict(state, quiet_for_ms, elapsed_ms, quiet_ms, max_ms, ready_for_ms=None, usable_while_loading=False, populated=False):
     """PURE. The page is settled when its document is READY (a page document, not BUSY, with content) AND the
-    browser has announced no structural change for `quiet_ms`. Past `max_ms` it answers not-settled with the reason,
-    never a guess. Returns None while still waiting."""
+    browser has announced no structural change for `quiet_ms` ("quiet"), or when it has stayed READY for
+    USABLE_CHANGING_MS while still changing ("usable_changing"). With `usable_while_loading` (opt-in), a BUSY document
+    that already holds content and has been quiet for `quiet_ms` also counts ("usable_while_loading"). Past `max_ms`
+    it answers not-settled with the reason, never a guess. Returns None while still waiting."""
     if state == "ready" and quiet_for_ms >= quiet_ms:
         return {"settled": True, "reason": "quiet"}
+    if state == "ready" and ready_for_ms is not None and ready_for_ms >= USABLE_CHANGING_MS:
+        return {"settled": True, "reason": "usable_changing"}
+    if usable_while_loading and quiet_while_loading(state, populated, quiet_for_ms, quiet_ms):
+        return {"settled": True, "reason": "usable_while_loading"}
     if elapsed_ms >= max_ms:
         return {"settled": False, "reason": "still_changing" if state == "ready" else state}
     return None
@@ -1714,7 +1778,7 @@ def quiet_while_loading(state, populated, quiet_for_ms, quiet_ms):
     return state == "busy" and bool(populated) and quiet_for_ms >= quiet_ms
 
 
-def wait_settled_action(app, pid, quiet_ms=800, max_ms=15000, url_contains=None, title_contains=None, not_doc=None, placeholder_focus_ok=False):
+def wait_settled_action(app, pid, quiet_ms=800, max_ms=15000, url_contains=None, title_contains=None, not_doc=None, placeholder_focus_ok=False, usable_while_loading=False):
     """READY-TO-LOOK, from the browser's own signals rather than a fixed sleep.
     Chromium marks a loading page document BUSY and announces every node added or removed (children-changed) through
     AT-SPI. This listens to those announcements for THIS browser only, and answers as soon as the page document is
@@ -1785,6 +1849,7 @@ def wait_settled_action(app, pid, quiet_ms=800, max_ms=15000, url_contains=None,
         return "ready", uri
 
     placeholder_focus = [None]
+    ready_since = [None]
 
     def tick():
         now = time.monotonic()
@@ -1796,9 +1861,17 @@ def wait_settled_action(app, pid, quiet_ms=800, max_ms=15000, url_contains=None,
             placeholder_focus[0] = dict(focus_placeholder_document_action(app), at_ms=round((now - t0) * 1000))
         if state == "ready" and first_ready[0] is None:
             first_ready[0] = now
+        # readiness must be CONTINUOUS for usable_changing: any tick that is not ready restarts it
+        if state == "ready":
+            if ready_since[0] is None:
+                ready_since[0] = now
+        else:
+            ready_since[0] = None
         if would_settle[0] is None and quiet_while_loading(state, populated[0], (now - last[0]) * 1000, quiet_ms):
             would_settle[0] = round((now - t0) * 1000)
-        verdict = settle_verdict(state, (now - last[0]) * 1000, (now - t0) * 1000, quiet_ms, max_ms)
+        verdict = settle_verdict(state, (now - last[0]) * 1000, (now - t0) * 1000, quiet_ms, max_ms,
+                                 ready_for_ms=(now - ready_since[0]) * 1000 if ready_since[0] is not None else None,
+                                 usable_while_loading=usable_while_loading, populated=populated[0])
         if verdict is None:
             return True
         result.update(verdict)
@@ -4367,8 +4440,9 @@ def recover_focus_action(app, orig_name, orig_role, s0, s1, orig_landmark=None, 
     }
 
 
-def main():
-    cmd = json.loads(sys.stdin.read())
+def main(cmd=None):
+    if cmd is None:
+        cmd = json.loads(sys.stdin.read())
     pid = cmd["pid"]
     offset_x = cmd.get("offset_x", 0)
     offset_y = cmd.get("offset_y", 0)
@@ -4439,7 +4513,7 @@ def main():
         return
 
     if action == "wait_settled":
-        print(json.dumps(wait_settled_action(app, cmd.get("pid"), int(cmd.get("quiet_ms") or 800), int(cmd.get("max_ms") or 15000), cmd.get("url_contains"), cmd.get("title_contains"), cmd.get("not_doc"), bool(cmd.get("placeholder_focus_ok")))))
+        print(json.dumps(wait_settled_action(app, cmd.get("pid"), int(cmd.get("quiet_ms") or 800), int(cmd.get("max_ms") or 15000), cmd.get("url_contains"), cmd.get("title_contains"), cmd.get("not_doc"), bool(cmd.get("placeholder_focus_ok")), bool(cmd.get("usable_while_loading")))))
         return
 
     if action == "document_text":
@@ -4575,7 +4649,69 @@ def main():
     print(json.dumps(out))
 
 
+def serve():
+    """PERSISTENT BRIDGE (2026-11-24, COMPUTER_USE_PERSISTENT_BRIDGE=1): one process answers many calls, one JSON request
+    per stdin line -> one JSON reply line {"id", "out"} | {"id", "error"}. A fresh process cost 125-170 ms before any work
+    (python + gi + the accessibility bus) on an idle 2-core laptop and 1-3 s under a loading page, paid 4-8 times per
+    action. Between requests the GLib main context is PUMPED, exactly as a screen reader stays alive: libatspi keeps its
+    client-side copy of the tree current from the browser's events only while they are dispatched, so a long-lived
+    client that stopped pumping would read a stale tree. Each request runs the same main() as a one-shot call, its
+    stdout captured; per-request env (the test switch) is applied for the request only."""
+    import io
+    import select
+    import traceback
+    from contextlib import redirect_stdout
+    from gi.repository import GLib
+    ctx = GLib.MainContext.default()
+    stdin = sys.stdin.buffer
+    buf = b""
+    while True:
+        # pump pending accessibility events, then wait up to 50 ms for the next request
+        while ctx.pending():
+            ctx.iteration(False)
+        ready, _, _ = select.select([stdin], [], [], 0.05)
+        if not ready:
+            continue
+        chunk = os.read(stdin.fileno(), 65536)
+        if not chunk:
+            return  # parent closed stdin: exit quietly
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            rid = None
+            try:
+                req = json.loads(line)
+                rid = req.get("id")
+                saved = {}
+                for k, v in (req.get("env") or {}).items():
+                    saved[k] = os.environ.get(k)
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = str(v)
+                out = io.StringIO()
+                try:
+                    with redirect_stdout(out):
+                        main(req["cmd"])
+                finally:
+                    for k, v in saved.items():
+                        if v is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = v
+                reply = {"id": rid, "out": out.getvalue()}
+            except Exception:
+                reply = {"id": rid, "error": traceback.format_exc()[-4000:]}
+            sys.stdout.write(json.dumps(reply) + "\n")
+            sys.stdout.flush()
+
+
 if __name__ == "__main__":
+    if "--serve" in sys.argv[1:]:
+        serve()
+        sys.exit(0)
     # BRIDGE_PROFILE=<file>: profile this call (cProfile) into <file> — for measuring where a read's time goes. Off by default.
     if os.environ.get("BRIDGE_PROFILE"):
         import cProfile
