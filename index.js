@@ -97,6 +97,15 @@ async function discoverCompositorEnv() {
   }
 
   process.env.XDG_RUNTIME_DIR = xdgRuntimeDir;
+
+  // Switch the session's accessibility bus on, as any assistive technology does. The GNOME setting
+  // only seeds it at login, and something in the session can flip it off later; while it is off,
+  // apps started from then on (Chromium) never join the accessibility tree. Best effort, silent.
+  if (AUTOMATION_BACKEND !== "headless") {
+    if (!process.env.DBUS_SESSION_BUS_ADDRESS) process.env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${xdgRuntimeDir}/bus`;
+    await execFileP("busctl", ["--user", "set-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled", "b", "true"],
+      { timeout: 3000 }).catch(() => {});
+  }
 }
 
 await discoverCompositorEnv();
