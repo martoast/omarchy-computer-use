@@ -531,8 +531,20 @@ def collect(app, offset_x, offset_y, include_text, text_filter, role_filter, lim
     except Exception:
         current_host = None
 
+    # TIME BUDGET (2026-11-25): a huge or hostile page (a bot-challenge frame, a 3,000-card grid) made one read take
+    # 20+ s on omarchy2. Past the budget the walk stops and returns what it has, in document order (header, search,
+    # top of the page first): a partial read in 4 s beats a whole one in 21. COMPUTER_USE_READ_BUDGET_S, 0 = none.
+    budget_s = float(os.environ.get("COMPUTER_USE_READ_BUDGET_S", "4") or 0)
+    deadline = time.monotonic() + budget_s if budget_s > 0 else None
+    over = [False]
+
     def visit(acc, depth, in_doc=False, doc_gen=None, doc_class="unknown", in_dialog=False, region=None):
         if len(results) >= limit or depth > 40:
+            return
+        if deadline is not None and (over[0] or time.monotonic() > deadline):
+            if not over[0]:
+                over[0] = True
+                print(f"[bridge] read stopped at its {budget_s:g} s budget after {len(results)} elements", file=sys.stderr)
             return
         try:
             role = acc.get_role_name()
