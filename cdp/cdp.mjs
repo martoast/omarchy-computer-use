@@ -76,7 +76,10 @@ export class PageSession {
     on("Network.requestWillBeSent", (p) => { if (p.type !== "WebSocket" && p.type !== "EventSource") this.inflight.set(p.requestId, Date.now()); this.lastNetwork = Date.now(); });
     const done = (p) => { this.inflight.delete(p.requestId); this.lastNetwork = Date.now(); };
     on("Network.loadingFinished", done); on("Network.loadingFailed", done);
-    on("Page.frameStartedLoading", () => { this.loadState = "loading"; });
+    this.navSeq = 0; // bumps on every main-frame navigation or load start: "nothing loaded since the last settle"
+    // main frame only: ad and tracker iframes start loading all the time
+    on("Page.frameStartedLoading", (p) => { if (!this.mainFrame || p.frameId === this.mainFrame) { this.loadState = "loading"; this.navSeq++; } });
+    on("Page.frameNavigated", (p) => { if (!p.frame?.parentId) { this.mainFrame = p.frame.id; this.navSeq++; } });
     on("Page.loadEventFired", () => { this.loadState = "loaded"; });
     on("Page.javascriptDialogOpening", (p) => { this.jsDialog = p; });
     on("Page.javascriptDialogClosed", () => { this.jsDialog = null; });

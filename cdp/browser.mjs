@@ -95,7 +95,7 @@ export class Browser {
 
   async attach(targetId) {
     const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId, flatten: true });
-    this.page = new PageSession(this.cdp, targetId, sessionId);
+    this.page = new PageSession(this.cdp, targetId, sessionId); this.settledSeq = -1;
     await this.page.init();
     await this.cdp.send("Target.activateTarget", { targetId }).catch(() => {});
     this.pageGone = false; this.newTab = null;
@@ -291,6 +291,7 @@ export class Browser {
   }
 
   async mouse(type, x, y, extra = {}) {
+    if (type === "mousePressed") this.actSeq = (this.actSeq || 0) + 1;
     await this.page.send("Input.dispatchMouseEvent", { type, x, y, button: extra.button || "none", clickCount: extra.clickCount || 0, buttons: extra.buttons || 0, ...extra });
   }
   async clickAt(x, y, { button = "left", clicks = 1 } = {}) {
@@ -431,7 +432,7 @@ export class Browser {
     const mark = await this.mark();
     const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers: mods };
     await this.page.send("Input.dispatchKeyEvent", { type: text && !mods ? "keyDown" : "rawKeyDown", ...base, ...(text && !mods ? { text, unmodifiedText: text } : {}) });
-    await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
     const combo = [...modifiers, name].join("+");
     if (before != null) {
       await sleep(250);
@@ -446,14 +447,14 @@ export class Browser {
   async wheel(x, y, direction = "down", amount = 5) {
     const before = await this.scrollState();
     await this.mouse("mouseMoved", x, y);
-    await this.page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY: (direction === "up" ? -1 : 1) * amount * 100 });
+    this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x, y, deltaX: 0, deltaY: (direction === "up" ? -1 : 1) * amount * 100 });
     await sleep(300);
     const after = await this.scrollState();
     return { text: after !== before ? `Scrolled ${direction} (${before} -> ${after})` : `Not scrolled: the page did not move at (${x}, ${y})` };
   }
 
   async typeText(text) {
-    await this.page.send("Input.insertText", { text: String(text) });
+    this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.insertText", { text: String(text) });
     return { text: `Typed ${JSON.stringify(String(text))} into the focused element` };
   }
 
@@ -475,9 +476,9 @@ export class Browser {
     if (clear) {
       await this.withNode(t.backendNodeId, `function() { const e = this; if (e.select && "value" in e) e.select(); else { const r = document.createRange(); r.selectNodeContents(e); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } return true; }`).catch(() => {});
       await this.page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
-      await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+      this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
     }
-    await this.page.send("Input.insertText", { text: String(value) });
+    this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.insertText", { text: String(value) });
     await sleep(120);
     const got = await this.withNode(t.backendNodeId, `function() { const e = this; return "value" in e ? String(e.value) : String(e.innerText || e.textContent || ""); }`).catch(() => null);
     const typedOk = got != null && got.toLowerCase().includes(String(value).toLowerCase().slice(0, 40));
@@ -486,7 +487,7 @@ export class Browser {
     if (pressEnter) {
       const before = await this.mark();
       await this.page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
-      await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      this.actSeq = (this.actSeq || 0) + 1; await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
       const w = await this.watch(before, { maxMs: 3000 });
       if (w.urlChanged) await this.waitSettled({ maxMs: 12000 });
       text += w.changed ? `; pressed Return. Transition observed: ${w.text}` : "; pressed Return. No transition observed";
@@ -494,7 +495,8 @@ export class Browser {
     return { text };
   }
 
-  async selectOption(target, optionText) {
+  async selectOption(...a) { this.actSeq = (this.actSeq || 0) + 1; return this.selectOptionInner(...a); }
+  async selectOptionInner(target, optionText) {
     const t = await this.find({ ref: target.ref, text: target.text, role: target.ref ? undefined : (target.role || "combo box") });
     if (t.error) return { text: t.error, isError: true };
     const want = String(optionText).trim().toLowerCase();
@@ -572,6 +574,13 @@ export class Browser {
       const b = document.body; const n = b ? b.querySelectorAll("a[href],button,input,select,textarea,[role=button],[role=link]").length : 0;
       // visible text, not textContent (inline <script> text made an empty shell look like content)
       return { r: document.readyState, m: window.__cuMut, q: Date.now() - (window.__cuMutAt || 0), u: location.href, c: n >= 3 || (b && b.innerText.length > 200) }; })()`;
+    // nothing navigated since the last settle and the DOM is quiet right now: settled already (planners call this a lot)
+    // (or nothing of ours acted on it since: the page we called usable is still the page we called usable)
+    if (this.settledSeq === this.page.navSeq && !urlContains) {
+      const st = await this.page.evaluate(probe).catch(() => null);
+      const untouched = this.settledAct === this.actSeq;
+      if (st && st.r !== "loading" && st.c && (untouched || (st.q ?? 0) >= quietMs || this.page.busyRequests() === 0) && (!notUrl || st.u !== notUrl)) return { settled: true, reason: "already", state: st.r, ms: Date.now() - t0, ready_ms: 0, events: 0 };
+    }
     while (Date.now() - t0 < maxMs) {
       await this.followTabs();
       let st;
@@ -584,7 +593,7 @@ export class Browser {
           readySince = readySince ?? Date.now();
           // quiet as the page itself measured it (time since its last DOM change): an already quiet page returns at once
           const quiet = st.q ?? Date.now() - quietSince, net = this.page.busyRequests();
-          const out = (reason) => ({ settled: true, reason, state, ms: Date.now() - t0, ready_ms: readySince - t0, events });
+          const out = (reason) => { this.settledSeq = this.page.navSeq; this.settledAct = this.actSeq; return { settled: true, reason, state, ms: Date.now() - t0, ready_ms: readySince - t0, events }; };
           // and ready for a moment as WE saw it: a document right after the swap reported itself quiet with an empty tree
           const seen = Date.now() - readySince >= 300;
           if (seen && quiet >= quietMs && net === 0) return out("quiet");
