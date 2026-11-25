@@ -97,7 +97,6 @@ export class Browser {
     const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId, flatten: true });
     this.page = new PageSession(this.cdp, targetId, sessionId);
     await this.page.init();
-    if (process.env.COMPUTER_USE_CDP_UA) await this.page.send("Emulation.setUserAgentOverride", { userAgent: process.env.COMPUTER_USE_CDP_UA, acceptLanguage: "en-US,en" }).catch(() => {});
     await this.cdp.send("Target.activateTarget", { targetId }).catch(() => {});
     this.pageGone = false; this.newTab = null;
     this.refs.clear(); this.refOf.clear();

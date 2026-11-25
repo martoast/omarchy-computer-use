@@ -54,18 +54,11 @@ export async function spawnCdpInstance({ url = "about:blank", headless = process
   let port;
   for (;;) { const s = fs.readFileSync(portFile, "utf8").split("\n")[0].trim(); if (s) { port = Number(s); break; } await sleep(50); }
   const h = { pid: child.pid, port, httpUrl: `http://127.0.0.1:${port}`, userDataDir, headless, bin, child };
-  // headless Chrome names itself in its user agent ("HeadlessChrome"); sites treat that as a bot. Say Chrome.
-  if (headless) {
-    try {
-      const v = await (await fetch(`${h.httpUrl}/json/version`)).json();
-      h.userAgent = String(v["User-Agent"] || "").replace("HeadlessChrome", "Chrome");
-    } catch {}
-  }
   return h;
 }
 
 export function cdpInstanceEnv(h) {
-  return { COMPUTER_USE_BACKEND: "cdp", COMPUTER_USE_CDP_URL: h.httpUrl, ...(h.userAgent ? { COMPUTER_USE_CDP_UA: h.userAgent } : {}) };
+  return { COMPUTER_USE_BACKEND: "cdp", COMPUTER_USE_CDP_URL: h.httpUrl };
 }
 
 export async function teardownCdpInstance(h) {
