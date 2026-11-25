@@ -58,16 +58,24 @@ def size(v):
 
 # ---- window, web area, omnibox --------------------------------------------------------------------------------------
 def window():
+    # the browser window: a standard window that holds a web page or the toolbar. Not whatever has focus: a permission
+    # bubble ("www.homedepot.com wants to: Know your location") is a window of its own and takes focus.
     global APP
-    w = attr(APP, "AXFocusedWindow") or attr(APP, "AXMainWindow")
-    if w is None:
-        ws = attr(APP, "AXWindows") or []
-        w = ws[0] if ws else None
-    if w is None:
+    def pick():
+        cands = []
+        f = attr(APP, "AXFocusedWindow")
+        if f is not None: cands.append(f)
+        cands += attr(APP, "AXWindows") or []
+        for w in cands:
+            if attr(w, "AXSubrole") == "AXStandardWindow" and "wants to" not in text_of(attr(w, "AXTitle")):
+                return w
+        return None
+    w = pick()
+    if w is None and not (attr(APP, "AXWindows") or []):
         # an application handle made while Chrome was still starting never sees its windows: make a new one
         APP = AXUIElementCreateApplication(PID)
         AXUIElementSetAttributeValue(APP, "AXManualAccessibility", True)
-        w = attr(APP, "AXFocusedWindow") or attr(APP, "AXMainWindow") or ((attr(APP, "AXWindows") or [None])[0])
+        w = pick()
     return w
 
 def first(e, pred, depth=0, max_depth=40):

@@ -37,6 +37,8 @@ export async function spawnMacInstance({ url = "about:blank", profileKey = proce
     `--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", "--disable-search-engine-choice-screen",
     "--force-renderer-accessibility", `--window-size=${width},${height}`, "--window-position=40,40", "--lang=en-US",
     "--hide-crash-restore-bubble",
+    // a site asking for location or notifications gets a quiet no (the prompt is a window that takes focus)
+    "--deny-permission-prompts",
     // a window behind the person's own windows must keep rendering and running timers at full speed
     "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling",
     "--new-window", url,
