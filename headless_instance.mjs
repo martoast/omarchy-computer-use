@@ -975,6 +975,15 @@ async function spawnHeadlessInstanceOnce({ width = 1920, height = 1080, label = 
     const block = (blockTrackers ?? process.env.COMPUTER_USE_BLOCK_TRACKERS === "1") && usExitProxy == null;
     const proxy = block ? await blockingProxy(BLOCKED_TRACKER_HOSTS).ready : usExitProxy;
     const chromiumEnv = chromiumEnvFor({ base: process.env, runtimeDir, waylandDisplay, usExitProxy: proxy });
+    // Chromium joins the accessibility tree only if the session's a11y bus says IsEnabled when it STARTS. The desktop
+    // backend switches it on at startup (index.js), the headless path never did; on a fresh Omarchy (2026-11-25,
+    // omarchy2) the bus sat at IsEnabled=false and flipped back after being set, so every instance came up with no
+    // AT-SPI app ("no AT-SPI application found for pid"). Switch it on right before each launch. Best effort, silent.
+    await new Promise((resolve) => {
+      const b = spawn("busctl", ["--user", "set-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled", "b", "true"], { stdio: "ignore", env: process.env });
+      const t = setTimeout(() => { try { b.kill(); } catch {} resolve(); }, 3000);
+      b.on("exit", () => { clearTimeout(t); resolve(); }); b.on("error", () => { clearTimeout(t); resolve(); });
+    });
     chromiumProc = spawn(
       "chromium",
       chromiumArgv({ profileDir, cacheDir: persistentProfileKey ? persistentCacheDir(persistentProfileKey) : path.join(workDir, "chromium-cache"), instanceDir: workDir, initialUrl, allowInsecureLocalhost, softwareRender }),
