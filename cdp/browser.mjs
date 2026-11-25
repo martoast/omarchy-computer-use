@@ -304,7 +304,7 @@ export class Browser {
   // ---- transition watch: what an action changed on the page ---------------------------------------------------------
   async mark() {
     const info = await this.pageInfo();
-    await this.page.evaluate(`(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } return true; })()`).catch(() => {});
+    await this.page.evaluate(`(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMutAt = Date.now(); window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; window.__cuMutAt = Date.now(); }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } return true; })()`).catch(() => {});
     const mut = await this.page.evaluate("window.__cuMut || 0").catch(() => 0);
     return { url: info.url, mut, dialogs: await this.dialogCount(), t: Date.now() };
   }
@@ -379,6 +379,7 @@ export class Browser {
     const before = await this.mark();
     await this.clickAt(aim.x, aim.y, { button, clicks });
     const w = observe ? await this.watch(before) : { changed: false, text: "" };
+    if (w.urlChanged) await this.waitSettled({ maxMs: 12000 });
     const post = w.urlChanged ? null : await this.axState(t.backendNodeId);
     const diff = this.stateDiff(pre, post);
     const what = [w.text, diff].filter(Boolean).join("; ");
@@ -438,6 +439,7 @@ export class Browser {
       return { text: after !== before ? `Pressed ${combo}. Scrolled (${before} -> ${after})` : `Pressed ${combo}. Not scrolled: the page did not move` };
     }
     const w = await this.watch(mark, { maxMs: key === "Enter" ? 2500 : 900 });
+    if (w.urlChanged) await this.waitSettled({ maxMs: 12000 });
     return { text: `Pressed ${combo}${w.changed ? `. Transition observed: ${w.text}` : ""}` };
   }
 
@@ -566,9 +568,10 @@ export class Browser {
   async waitSettled({ quietMs = 400, busyQuietMs = 600, usableMs = 1500, maxMs = 15000, urlContains = null, notUrl = null } = {}) {
     const t0 = Date.now();
     let lastMut = null, quietSince = Date.now(), readySince = null, state = "loading", events = 0;
-    const probe = `(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); }
+    const probe = `(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMutAt = Date.now(); window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; window.__cuMutAt = Date.now(); }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); }
       const b = document.body; const n = b ? b.querySelectorAll("a[href],button,input,select,textarea,[role=button],[role=link]").length : 0;
-      return { r: document.readyState, m: window.__cuMut, u: location.href, c: n >= 3 || (b && b.textContent.length > 400) }; })()`;
+      // visible text, not textContent (inline <script> text made an empty shell look like content)
+      return { r: document.readyState, m: window.__cuMut, q: Date.now() - (window.__cuMutAt || 0), u: location.href, c: n >= 3 || (b && b.innerText.length > 200) }; })()`;
     while (Date.now() - t0 < maxMs) {
       await this.followTabs();
       let st;
@@ -579,10 +582,13 @@ export class Browser {
         if (st.m !== lastMut) { if (lastMut != null) events += Math.max(0, st.m - lastMut); lastMut = st.m; quietSince = Date.now(); }
         if (st.r !== "loading" && st.c && urlOk) {
           readySince = readySince ?? Date.now();
-          const quiet = Date.now() - quietSince, net = this.page.busyRequests();
+          // quiet as the page itself measured it (time since its last DOM change): an already quiet page returns at once
+          const quiet = st.q ?? Date.now() - quietSince, net = this.page.busyRequests();
           const out = (reason) => ({ settled: true, reason, state, ms: Date.now() - t0, ready_ms: readySince - t0, events });
-          if (quiet >= quietMs && net === 0) return out("quiet");
-          if (quiet >= busyQuietMs) return out("usable_quiet");
+          // and ready for a moment as WE saw it: a document right after the swap reported itself quiet with an empty tree
+          const seen = Date.now() - readySince >= 300;
+          if (seen && quiet >= quietMs && net === 0) return out("quiet");
+          if (seen && quiet >= busyQuietMs) return out("usable_quiet");
           if (Date.now() - readySince >= usableMs) return out("usable_changing");
         } else readySince = null;
       }
