@@ -509,7 +509,8 @@ while time.time() - _t0 < 20 and window() is None:
 start_observer()
 reply({"id": 0, "ok": True, "result": {"ready": True, "trusted": bool(AXIsProcessTrusted()), "pid": PID, "window": window() is not None}})
 while True:
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, False)
+    # 20 ms turns: observer callbacks still land, commands wait at most 20 ms, and an idle helper costs ~nothing
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, False)
     try: line = INQ.get_nowait()
     except queue.Empty: continue
     if line is None: break
