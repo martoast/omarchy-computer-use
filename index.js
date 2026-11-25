@@ -3630,6 +3630,44 @@ server.registerTool(
   }
 );
 
+// open_url (2026-11-25, Alex: "this is the general solution for any website, so it needs to be fast"): plain
+// address-bar navigation for an agent that already chose the URL. ctrl+L, select-all, paste, Return (submitAddress), then
+// the PAGE DOCUMENT'S OWN URI is the proof it went there (one cheap probe every 200 ms), then a usable-page settle. It
+// skips type_into_element's omnibox machinery (whole-tree verify_text, the navigation-focus classification loop, the
+// autocomplete repair) that store checkouts need and that cost 3-12 s per navigation on omarchy2. One extra Return only
+// if the URI has not moved after 6 s (the "typed but never left" case); nothing else is guessed.
+server.registerTool(
+  "open_url",
+  {
+    title: "Open a URL in the browser tab (fast address-bar navigation)",
+    description: "Open an http(s) URL in the current tab: address bar, paste, Return. Verified by the page document's own URL changing, then waits for a usable page. Returns where it landed and how long it took.",
+    inputSchema: z.object({ url: z.string(), window_address: z.string().optional(), max_ms: z.number().int().min(1000).max(60000).default(15000) }).strict(),
+  },
+  async ({ url, window_address, max_ms }) => {
+    if (!/^https?:\/\//i.test(url)) return { content: [{ type: "text", text: "open_url needs an http(s) URL" }], isError: true };
+    const win = await resolveWindow(window_address);
+    const t0 = Date.now();
+    const before = await observePageUri(win).catch(() => "");
+    const same = (() => { try { return new URL(url).href.replace(/\/$/, "") === new URL(before).href.replace(/\/$/, ""); } catch { return false; } })();
+    await submitAddress(url);
+    let now = "", repressed = false;
+    const moved = (u) => u && (same || u !== before);
+    while (Date.now() - t0 < Math.min(max_ms, 10000)) {
+      await new Promise((r) => setTimeout(r, 200));
+      now = await observePageUri(win).catch(() => "");
+      if (moved(now)) break;
+      // a slow server keeps the old document for seconds (ESPN, Healthline on omarchy2): that is loading, not a lost
+      // Return; only well past that is a second Return the "typed but never left" case
+      if (!repressed && Date.now() - t0 > 6000) { repressed = true; await tapKey("Return"); }
+    }
+    if (!moved(now)) return { content: [{ type: "text", text: `FAILED: the page did not leave ${before || "the previous page"} for ${url} within ${Date.now() - t0} ms` }], isError: true };
+    const left = Math.max(1000, max_ms - (Date.now() - t0));
+    const st = await atspiBridge({ pid: win.pid, action: "wait_settled", quiet_ms: 400, max_ms: left, usable_while_loading: true, ...(AUTOMATION_BACKEND === "headless" ? { placeholder_focus_ok: true } : {}) }).catch((e) => ({ settled: false, reason: e.message }));
+    const landed = (await observePageUri(win).catch(() => "")) || now;
+    return { content: [{ type: "text", text: `Navigated to ${landed} (${Date.now() - t0} ms; settle: ${st.settled ? st.reason : `not settled, ${st.reason}`}${repressed ? "; Return pressed a second time" : ""})` }] };
+  }
+);
+
 server.registerTool(
   "page_text",
   {

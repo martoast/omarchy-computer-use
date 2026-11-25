@@ -167,6 +167,17 @@ tool("type_text", {
   inputSchema: z.object({ text: z.string() }).strict(),
 }, (a) => browser.typeText(a.text), { outcome: true });
 
+tool("open_url", {
+  title: "Open a URL in the browser tab (fast address-bar navigation)",
+  description: "Open an http(s) URL in the current tab, verified by the page's own URL, then wait for a usable page.",
+  inputSchema: z.object({ url: z.string(), max_ms: z.number().int().min(1000).max(60000).optional(), ...W }).strict(),
+}, async (a) => {
+  if (!/^https?:\/\//i.test(a.url)) return { text: "open_url needs an http(s) URL", isError: true };
+  const t0 = Date.now();
+  const r = await browser.navigate(a.url);
+  return r.isError ? r : { text: `${r.text} (${Date.now() - t0} ms)` };
+});
+
 tool("get_page_url", {
   title: "Get the page URL",
   description: "Return {url} of the page now open.",
