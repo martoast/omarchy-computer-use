@@ -10,22 +10,39 @@ import { z } from "zod";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Browser } from "./browser.mjs";
+import { Browser as CdpBrowser } from "./browser.mjs";
 import { spawnCdpInstance, teardownCdpInstance, cdpInstanceEnv } from "./instance.mjs";
 import { observe, renderObservation, actionOutcome, renderOutcome } from "../observation.mjs";
 
 const log = (...a) => process.stderr.write(`[cdp] ${a.join(" ")}\n`);
-let own = null;
-let httpUrl = process.env.COMPUTER_USE_CDP_URL;
-if (!httpUrl) {
-  own = await spawnCdpInstance({ headless: process.env.COMPUTER_USE_CDP_HEADLESS !== "0" });
-  Object.assign(process.env, cdpInstanceEnv(own));
-  httpUrl = own.httpUrl;
-  const bye = () => { teardownCdpInstance(own).finally(() => process.exit(0)); };
-  process.on("SIGTERM", bye); process.on("SIGINT", bye); process.stdin.on("end", bye);
+let own = null, browser;
+const bye = (td) => () => { Promise.resolve(td()).finally(() => process.exit(0)); };
+if (process.env.COMPUTER_USE_BACKEND === "ax") {
+  // macOS: a real Google Chrome read and driven through the accessibility API (no DevTools port; mac/)
+  const { Browser: AxBrowser } = await import("../mac/browser.mjs");
+  const mi = await import("../mac/instance.mjs");
+  let pid = process.env.COMPUTER_USE_AX_PID;
+  if (!pid) {
+    own = await mi.spawnMacInstance({});
+    Object.assign(process.env, mi.macInstanceEnv(own));
+    pid = own.pid;
+    const b = bye(() => mi.teardownMacInstance(own)); process.on("SIGTERM", b); process.on("SIGINT", b); process.stdin.on("end", b);
+  }
+  const home = os.homedir();
+  const python = process.env.COMPUTER_USE_AX_PYTHON || [path.join(home, "computer-use-mac/.venv/bin/python"), path.join(home, ".local/share/omarchy-computer-use/.venv/bin/python")].find((p) => fs.existsSync(p)) || "python3";
+  browser = await new AxBrowser({ pid, python, log }).connect();
+  log(`connected to Google Chrome pid ${pid} through accessibility`);
+} else {
+  let httpUrl = process.env.COMPUTER_USE_CDP_URL;
+  if (!httpUrl) {
+    own = await spawnCdpInstance({ headless: process.env.COMPUTER_USE_CDP_HEADLESS !== "0" });
+    Object.assign(process.env, cdpInstanceEnv(own));
+    httpUrl = own.httpUrl;
+    const b = bye(() => teardownCdpInstance(own)); process.on("SIGTERM", b); process.on("SIGINT", b); process.stdin.on("end", b);
+  }
+  browser = await new CdpBrowser({ httpUrl, log }).connect();
+  log(`connected to ${browser.cdp.version?.Browser || "browser"} at ${httpUrl}`);
 }
-const browser = await new Browser({ httpUrl, log }).connect();
-log(`connected to ${browser.cdp.version?.Browser || "browser"} at ${httpUrl}`);
 
 const server = new McpServer({ name: "computer-use", version: "0.2.0" });
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
