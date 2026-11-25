@@ -5030,3 +5030,11 @@ await loadPlugins(pluginContext);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+// The client going away (stdin closing) ends this process. Without it every benchmark task left its cores running
+// (474 idle cores, 3.5 GB, on omarchy2 2026-11-25): helpers and timers kept the event loop alive.
+{
+  let leaving = false;
+  const leave = () => { if (leaving) return; leaving = true; setTimeout(() => process.exit(0), 200).unref(); };
+  process.stdin.on("end", leave);
+  process.stdin.on("close", leave);
+}

@@ -16,13 +16,16 @@ import objc, Quartz
 from ApplicationServices import (
     AXUIElementCreateApplication, AXUIElementCopyAttributeValue, AXUIElementCopyMultipleAttributeValues,
     AXUIElementSetAttributeValue, AXUIElementPerformAction, AXUIElementCopyActionNames, AXValueGetValue, AXValueCreate, AXValueGetType, kAXValueAXErrorType,
-    AXObserverCreate, AXObserverAddNotification, AXUIElementCopyElementAtPosition, AXObserverGetRunLoopSource, AXIsProcessTrusted,
+    AXObserverCreate, AXObserverAddNotification, AXUIElementCopyElementAtPosition, AXUIElementSetMessagingTimeout, AXObserverGetRunLoopSource, AXIsProcessTrusted,
     kAXErrorSuccess, kAXValueCGPointType, kAXValueCGSizeType, kAXValueCFRangeType)
 from CoreFoundation import CFRunLoopGetCurrent, CFRunLoopAddSource, kCFRunLoopDefaultMode, CFRunLoopRunInMode
 
 PID = int(sys.argv[1])
 APP = AXUIElementCreateApplication(PID)
 AXUIElementSetAttributeValue(APP, "AXManualAccessibility", True)  # Chrome builds its web tree for AX clients
+# a busy Chrome (a heavy page loading) can hold ONE accessibility call for the system default (~6 s): cap each call
+AX_TIMEOUT = 1.5
+AXUIElementSetMessagingTimeout(APP, AX_TIMEOUT)
 
 # ---- the page's change clock ----------------------------------------------------------------------------------------
 CLOCK = {"n": 0, "at": time.time(), "load": 0, "dialogs": 0}
@@ -75,6 +78,7 @@ def window():
         # an application handle made while Chrome was still starting never sees its windows: make a new one
         APP = AXUIElementCreateApplication(PID)
         AXUIElementSetAttributeValue(APP, "AXManualAccessibility", True)
+        AXUIElementSetMessagingTimeout(APP, AX_TIMEOUT)
         w = pick()
     return w
 
@@ -89,8 +93,23 @@ def first(e, pred, depth=0, max_depth=40):
 def web_area():
     return first(window(), lambda e: attr(e, "AXRole") == "AXWebArea")
 
+_OMNI = {"el": None}
 def omnibox():
-    return first(window(), lambda e: attr(e, "AXRole") == "AXTextField" and "address" in str(attr(e, "AXDescription") or "").lower(), max_depth=25)
+    # the toolbar's address field: cached while it lives, and the search never descends into web content (a depth-first
+    # walk that met the page first walked the WHOLE page, no budget: 20 s reads on big pages)
+    e = _OMNI["el"]
+    if e is not None and attr(e, "AXRole") == "AXTextField": return e
+    def find(x, d=0):
+        if x is None or d > 25: return None
+        r = attr(x, "AXRole")
+        if r == "AXWebArea": return None
+        if r == "AXTextField" and "address" in str(attr(x, "AXDescription") or "").lower(): return x
+        for c in attr(x, "AXChildren") or []:
+            hit = find(c, d + 1)
+            if hit is not None: return hit
+        return None
+    _OMNI["el"] = find(window())
+    return _OMNI["el"]
 
 # ---- refs: one per element, stable while the element lives (element handles compare by identity) ------------------
 REFS, ELEMS, NEXT = {}, {}, [1]
@@ -175,7 +194,7 @@ def snapshot(include_text=False):
                 # Chrome leaves many link/button titles empty and puts the text in children
                 parts = []
                 def gather(c, d=0):
-                    if d > 6 or len(parts) > 8: return
+                    if d > 6 or len(parts) > 8 or over[0]: return
                     for k in attr(c, "AXChildren") or []:
                         if attr(k, "AXRole") == "AXStaticText": parts.append(text_of(attr(k, "AXValue")))
                         else: gather(k, d + 1)

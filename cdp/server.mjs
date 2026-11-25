@@ -44,6 +44,13 @@ if (process.env.COMPUTER_USE_BACKEND === "ax") {
   log(`connected to ${browser.cdp.version?.Browser || "browser"} at ${httpUrl}`);
 }
 
+// The client going away (its stdin closing) ends this process, whatever else holds the event loop open: the ax
+// backend's python helper is a child with open pipes, and on 2026-11-25 every benchmark task left its cores (and their
+// helpers) running: 1,002 helpers and a load average of 800 on the Mac mini. Our own instance is torn down first.
+let leaving = false;
+const leave = () => { if (leaving) return; leaving = true; try { browser?.close?.(); } catch {} const t = own && process.env.COMPUTER_USE_BACKEND === "ax" ? import("../mac/instance.mjs").then((m) => m.teardownMacInstance(own)) : own ? teardownCdpInstance(own) : null; Promise.resolve(t).catch(() => {}).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
+process.stdin.on("end", leave); process.stdin.on("close", leave);
+
 const server = new McpServer({ name: "computer-use", version: "0.2.0" });
 const text = (t, isError = false) => ({ content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) });
 const compact = () => process.env.COMPUTER_USE_READ_FORMAT === "compact";
