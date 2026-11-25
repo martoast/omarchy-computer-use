@@ -254,8 +254,19 @@ export class Browser {
     } finally { this.page.send("Runtime.releaseObjectGroup", { objectGroup: "cu-act" }).catch(() => {}); }
   }
 
-  // scroll the element to the middle of the window and return a point on it that is not covered, or why not
+  // aim, and when something that is not a dialog covers the target (most often a hover menu the mouse opened by
+  // resting where the last click was), move the mouse to a corner of the window, let the menu close, aim again
   async aim(backendNodeId) {
+    const a = await this.aimOnce(backendNodeId);
+    if (!a.covered || a.covered.startsWith("a dialog")) return a;
+    const v = await this.page.evaluate("[innerWidth, innerHeight]").catch(() => [1280, 900]);
+    await this.mouse("mouseMoved", Math.max(1, v[0] - 3), Math.max(1, v[1] - 3));
+    await new Promise((r) => setTimeout(r, 400));
+    return this.aimOnce(backendNodeId);
+  }
+
+  // scroll the element to the middle of the window and return a point on it that is not covered, or why not
+  async aimOnce(backendNodeId) {
     const fn = `function() {
       const e = this.nodeType === 1 ? this : this.parentElement;
       if (!e || !e.isConnected) return { gone: true };
