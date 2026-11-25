@@ -577,14 +577,14 @@ export class Browser {
     // nothing navigated since the last settle and the DOM is quiet right now: settled already (planners call this a lot)
     // (or nothing of ours acted on it since: the page we called usable is still the page we called usable)
     if (this.settledSeq === this.page.navSeq && !urlContains) {
-      const st = await this.page.evaluate(probe).catch(() => null);
+      const st = await this.page.evaluate(probe, { timeoutMs: 1500 }).catch(() => null);
       const untouched = this.settledAct === this.actSeq;
       if (st && st.r !== "loading" && st.c && (untouched || (st.q ?? 0) >= quietMs || this.page.busyRequests() === 0) && (!notUrl || st.u !== notUrl)) return { settled: true, reason: "already", state: st.r, ms: Date.now() - t0, ready_ms: 0, events: 0 };
     }
     while (Date.now() - t0 < maxMs) {
       await this.followTabs();
       let st;
-      try { st = await this.page.evaluate(probe); } catch { st = null; }
+      try { st = await this.page.evaluate(probe, { timeoutMs: 1500 }); } catch { st = null; }
       if (st) {
         state = st.r;
         const urlOk = (!urlContains || st.u.includes(urlContains)) && (!notUrl || st.u !== notUrl);

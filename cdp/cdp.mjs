@@ -96,8 +96,8 @@ export class PageSession {
       this.send("Page.handleJavaScriptDialog", { accept: p.type === "alert" || p.type === "beforeunload" }).catch(() => {});
     }, this.sessionId);
   }
-  async evaluate(expression, { awaitPromise = true } = {}) {
-    const r = await this.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise });
+  async evaluate(expression, { awaitPromise = true, timeoutMs = 30000 } = {}) {
+    const r = await this.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise }, { timeoutMs });
     if (r.exceptionDetails) throw new Error(`page script failed: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
     return r.result?.value;
   }
