@@ -1946,11 +1946,14 @@ def document_text_action(app, max_chars=4000000, node_budget=400000, reverse=Fal
     if doc[0] is None:
         return {"ok": False, "reason": "no_page_document"}
     parts, size, nodes, truncated = [], 0, 0, False
+    # time bound too (COMPUTER_USE_TEXT_BUDGET_S, default 3 s): a huge page's text walk was 2.7 s p90 for the reader
+    budget_s = float(os.environ.get("COMPUTER_USE_TEXT_BUDGET_S", "3") or 0)
+    deadline = time.monotonic() + budget_s if budget_s > 0 else None
     stack = [doc[0]]
     while stack:
         acc = stack.pop()
         nodes += 1
-        if nodes > node_budget or size > max_chars:
+        if nodes > node_budget or size > max_chars or (deadline is not None and time.monotonic() > deadline):
             truncated = True
             break
         try:

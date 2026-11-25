@@ -135,8 +135,17 @@ def snapshot(include_text=False):
     vw, vh = size(attr(web, "AXSize")) or (0, 0)
     host = (text_of(attr(web, "AXURL")).split("/") + ["", "", ""])[2]
     out = []
+    # TIME BUDGET (2026-11-25): a giant table page (Basketball Reference) took 18 s to walk. Past the budget the walk
+    # stops and returns what it has, in document order (header, search, top of the page first). Same rule as the Linux
+    # bridge's COMPUTER_USE_READ_BUDGET_S.
+    import os as _os
+    budget = float(_os.environ.get("COMPUTER_USE_READ_BUDGET_S", "4") or 0)
+    deadline = time.time() + budget if budget > 0 else None
+    over = [False]
     def walk(e, region, in_dialog, in_control, depth):
-        if depth > 120: return
+        if depth > 120 or over[0]: return
+        if deadline is not None and time.time() > deadline:
+            over[0] = True; sys.stderr.write(f"[axhelper] read stopped at its {budget:g} s budget after {len(out)} elements\n"); return
         err, v = AXUIElementCopyMultipleAttributeValues(e, NAMES, 0, None)
         if err != kAXErrorSuccess or not v: return
         role_ax, sub = v[0], v[1]
@@ -211,10 +220,11 @@ def page_info(web=None):
             "busy": (loaded is False) or (prog is not None and float(prog) < 1.0),
             "clock": CLOCK["n"], "quiet_ms": int((time.time() - CLOCK["at"]) * 1000), "loads": CLOCK["load"]}
 
-def page_text(max_chars=4000000):
+def page_text(max_chars=4000000, budget_s=3.0):
     web = web_area(); parts = []; n = [0]
+    deadline = time.time() + budget_s
     def walk(e, d=0):
-        if d > 120 or n[0] > max_chars: return
+        if d > 120 or n[0] > max_chars or time.time() > deadline: return
         err, v = AXUIElementCopyMultipleAttributeValues(e, ["AXRole", "AXValue", "AXChildren", "AXURL"], 0, None)
         if err != kAXErrorSuccess or not v: return
         if v[0] == "AXWebArea" and e != web:
