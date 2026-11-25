@@ -360,7 +360,7 @@ export class Browser {
       const r = await this.page.send("Page.navigate", { url }, { timeoutMs: 30000 });
       if (r.errorText) return { text: `FAILED: navigation to ${url} failed: ${r.errorText}`, isError: true };
     } catch (e) { return { text: `FAILED: navigation to ${url}: ${e.message}`, isError: true }; }
-    await this.waitSettled({ quietMs: 500, maxMs: 15000, notUrl: before.url === url ? null : before.url });
+    await this.waitSettled({ maxMs: 15000, notUrl: before.url === url ? null : before.url });
     const info = await this.pageInfo();
     this.refs.clear(); this.refOf.clear();
     return { text: `Navigated to ${info.url || url}` };
@@ -486,7 +486,7 @@ export class Browser {
       await this.page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
       await this.page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
       const w = await this.watch(before, { maxMs: 3000 });
-      if (w.urlChanged) await this.waitSettled({ quietMs: 500, maxMs: 12000 });
+      if (w.urlChanged) await this.waitSettled({ maxMs: 12000 });
       text += w.changed ? `; pressed Return. Transition observed: ${w.text}` : "; pressed Return. No transition observed";
     }
     return { text };
@@ -558,24 +558,32 @@ export class Browser {
     return { text: "give dialog_ref, dialog_text or control_ref", isError: true };
   }
 
-  async waitSettled({ quietMs = 800, maxMs = 15000, urlContains = null, notUrl = null } = {}) {
+  // "settled" = usable, not fully loaded: the document is interactive with real content and the DOM has gone quiet.
+  // Waiting for the load event and an idle network (ads, trackers, video) cost 3-8 s per navigation on big sites.
+  //   quiet           DOM quiet for quietMs and no request in flight
+  //   usable_quiet    DOM quiet for busyQuietMs while requests still run (ad/analytics traffic)
+  //   usable_changing content there for usableMs but the DOM keeps changing (carousels, tickers)
+  async waitSettled({ quietMs = 400, busyQuietMs = 600, usableMs = 1500, maxMs = 15000, urlContains = null, notUrl = null } = {}) {
     const t0 = Date.now();
     let lastMut = null, quietSince = Date.now(), readySince = null, state = "loading", events = 0;
-    await this.page.evaluate(`(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } return 1; })()`).catch(() => {});
+    const probe = `(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); }
+      const b = document.body; const n = b ? b.querySelectorAll("a[href],button,input,select,textarea,[role=button],[role=link]").length : 0;
+      return { r: document.readyState, m: window.__cuMut, u: location.href, c: n >= 3 || (b && b.textContent.length > 400) }; })()`;
     while (Date.now() - t0 < maxMs) {
       await this.followTabs();
-      let s;
-      try { s = await this.page.evaluate(`(() => { if (!window.__cuMo) { window.__cuMut = 0; window.__cuMo = new MutationObserver((l) => { window.__cuMut += l.length; }); window.__cuMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); } return { r: document.readyState, m: window.__cuMut, u: location.href }; })()`); }
-      catch { s = null; }
-      if (s) {
-        state = s.r;
-        const urlOk = (!urlContains || s.u.includes(urlContains)) && (!notUrl || s.u !== notUrl);
-        if (s.m !== lastMut) { if (lastMut != null) events += Math.max(0, s.m - lastMut); lastMut = s.m; quietSince = Date.now(); }
-        if (s.r === "complete" && urlOk) {
+      let st;
+      try { st = await this.page.evaluate(probe); } catch { st = null; }
+      if (st) {
+        state = st.r;
+        const urlOk = (!urlContains || st.u.includes(urlContains)) && (!notUrl || st.u !== notUrl);
+        if (st.m !== lastMut) { if (lastMut != null) events += Math.max(0, st.m - lastMut); lastMut = st.m; quietSince = Date.now(); }
+        if (st.r !== "loading" && st.c && urlOk) {
           readySince = readySince ?? Date.now();
-          const net = this.page.busyRequests();
-          if (Date.now() - quietSince >= quietMs && net === 0) return { settled: true, reason: "quiet", state, ms: Date.now() - t0, ready_ms: readySince - t0, events };
-          if (Date.now() - readySince >= 2500) return { settled: true, reason: "usable_changing", state, ms: Date.now() - t0, ready_ms: readySince - t0, events };
+          const quiet = Date.now() - quietSince, net = this.page.busyRequests();
+          const out = (reason) => ({ settled: true, reason, state, ms: Date.now() - t0, ready_ms: readySince - t0, events });
+          if (quiet >= quietMs && net === 0) return out("quiet");
+          if (quiet >= busyQuietMs) return out("usable_quiet");
+          if (Date.now() - readySince >= usableMs) return out("usable_changing");
         } else readySince = null;
       }
       await sleep(100);
