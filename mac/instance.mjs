@@ -28,7 +28,10 @@ function pidFor(profileDir) {
   return null;
 }
 
-export async function spawnMacInstance({ url = "about:blank", profileKey = process.env.COMPUTER_USE_PROFILE || "bench", width = 1280, height = 900, timeoutMs = 20000 } = {}) {
+// proxy: a LOOPBACK http(s)/socks5 proxy only (e.g. the US exit, wireproxy on 127.0.0.1:18845), for a site that is
+// geo-blocked from where the machine is; never a remote proxy, never for every site.
+export async function spawnMacInstance({ url = "about:blank", profileKey = process.env.COMPUTER_USE_PROFILE || "bench", width = 1280, height = 900, timeoutMs = 20000, proxy = null } = {}) {
+  if (proxy != null && !/^(https?|socks5):\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(proxy)) throw new TypeError("proxy must be a loopback http:// or socks5:// URL");
   if (!fs.existsSync(APP)) throw new Error(`Google Chrome not found at ${APP} (set COMPUTER_USE_CHROME_APP)`);
   const profileDir = path.join(profileRoot(), profileKey);
   fs.mkdirSync(profileDir, { recursive: true });
@@ -41,6 +44,7 @@ export async function spawnMacInstance({ url = "about:blank", profileKey = proce
     "--deny-permission-prompts",
     // a window behind the person's own windows must keep rendering and running timers at full speed
     "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling",
+    ...(proxy ? [`--proxy-server=${proxy}`] : []),
     "--new-window", url,
   ];
   // -n: a new instance (its own profile), -g: in the background (no focus taken), -j: launched hidden is NOT used:
