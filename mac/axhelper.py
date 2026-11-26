@@ -218,14 +218,25 @@ def snapshot(include_text=False):
             # into view). Dropping those left only the first screen — 86 of 639 controls on a Newegg results page, no
             # filters, no later results. Place it after the last positioned element, below the viewport, in page order.
             # (Chrome reports them either with no position or with a ZERO size; display:none nodes are not in the tree)
-            if pos and (not sz or sz[0] <= 0 or sz[1] <= 0):
-                sz = (1, 1)                                   # a real position, no size: keep where it is
+            skip = False
+            if pos and (not sz or sz[0] <= 1 or sz[1] <= 1):
+                # no size: below (or above) the fold it is a real element not laid out yet -> keep where it is; INSIDE the
+                # viewport it is collapsed (Academy's closed "Big Fun Deals" drawer, 1 px wide: Colibrí took it for an open
+                # dialog and saw nothing else) -> not on the page for a person
+                # Chrome PINS an off-screen element to the viewport's top or bottom edge with zero height (Newegg: y = 813
+                # = vh, h 0); the drawer is 1 px wide but full height, mid-viewport
+                # Clipped items in a scrolling list (Academy's brand list past "ASICS") are pinned the same way to the
+                # LIST's edge, mid-viewport: zero HEIGHT = off-screen somewhere -> keep; zero WIDTH = collapsed -> drop
+                ry = pos[1] - origin[1]
+                collapsed = sz and sz[0] <= 1 and sz[1] > 1
+                if vh and collapsed and 0 <= ry <= vh: skip = True
+                sz = (1, 1)
             if not pos:
                 below[0] = max(below[0], vh) + 24             # no position at all: after the last one, below the fold
                 pos, sz = (origin[0], origin[1] + below[0]), (1, 1)
             elif pos[1] - origin[1] > below[0]:
                 below[0] = pos[1] - origin[1]
-            if sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
+            if not skip and sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
                 x, y = pos[0] - origin[0], pos[1] - origin[1]
                 states = []
                 val = g(4)
@@ -460,18 +471,25 @@ def choose_native(ref, want):
     # a native <select> (AXPopUpButton): open its menu, press the matching item, read the button back
     e = elem(ref)
     want_l = str(want).strip().lower()
-    AXUIElementPerformAction(e, "AXPress")
-    items = []
+    def open_menus():
+        m = [m for m in (attr(e, "AXChildren") or []) if attr(m, "AXRole") == "AXMenu"]
+        return m or [m for m in (attr(APP, "AXChildren") or []) if attr(m, "AXRole") == "AXMenu"]
+    def close(menus):
+        # AXCancel reaches the menu in a background Chrome; an Escape posted to the process does not (Soriana: a
+        # menu left open by a miss made the next select_option's press CLOSE it -> "did not open")
+        for m in menus or open_menus(): AXUIElementPerformAction(m, "AXCancel")
+        if open_menus(): post_key(53)
+    # never press a dropdown whose menu is already open: the press would close it
+    if not open_menus(): AXUIElementPerformAction(e, "AXPress")
+    items, menus = [], []
     for _ in range(20):
         time.sleep(0.05)
-        menus = [m for m in (attr(e, "AXChildren") or []) if attr(m, "AXRole") == "AXMenu"]
-        if not menus:
-            menus = [m for m in (attr(APP, "AXChildren") or []) if attr(m, "AXRole") == "AXMenu"]
+        menus = open_menus()
         if menus:
             items = [i for m in menus for i in (attr(m, "AXChildren") or []) if attr(i, "AXRole") == "AXMenuItem"]
             if items: break
     if not items:
-        post_key(53)
+        close(menus)
         return {"err": "the dropdown's menu did not open"}
     def item_name(i):
         # Chrome's native <select> menu: AXTitle is often empty (Soriana's "Sort By" listed blanks); the text is in
@@ -489,7 +507,7 @@ def choose_native(ref, want):
             if test(n): pick = i; break
         if pick is not None: break
     if pick is None:
-        post_key(53)
+        close(menus)
         return {"missing": True, "options": names[:15]}
     AXUIElementPerformAction(pick, "AXPress")
     time.sleep(0.25)
