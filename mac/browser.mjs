@@ -75,7 +75,11 @@ export class Browser {
     const want = String(text).toLowerCase();
     const roles = role ? String(role).toLowerCase().split("|").map((s) => s.trim()) : null;
     const roleOk = (e) => !roles || roles.includes(e.role) || roles.some((r) => (r === "button" && e.role === "push button") || (r === "textbox" && e.role === "entry") || (r === "combobox" && e.role === "combo box") || (r === "checkbox" && e.role === "check box") || (r === "radio" && e.role === "radio button"));
-    const hits = snap.elements.filter((e) => roleOk(e) && String(e.name).toLowerCase().includes(want));
+    // a NAME stays inside the web page: "Search" must not match Chrome's "Address and search bar" (Henry2, b1 task 21:
+    // a stale-ref retry by name typed the query into the omnibox and opened a Google search). Only a name that asks for
+    // the address bar itself reaches it.
+    const wantsBar = /address|omnibox|url bar|location bar/.test(want);
+    const hits = snap.elements.filter((e) => roleOk(e) && String(e.name).toLowerCase().includes(want) && (e.in_doc !== false || wantsBar));
     if (!hits.length) return { error: `No element found matching "${text}"${role ? ` (role ${role})` : ""}` };
     const exact = hits.find((e) => e.name.toLowerCase() === want);
     const inView = (e) => e.cy >= 0 && e.cy <= snap.viewport.bottom;
