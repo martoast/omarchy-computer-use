@@ -164,7 +164,7 @@ def snapshot(include_text=False):
     budget = float(_os.environ.get("COMPUTER_USE_READ_BUDGET_S", "4") or 0)
     deadline = time.time() + budget if budget > 0 else None
     over = [False]
-    def walk(e, region, in_dialog, in_control, depth):
+    def walk(e, region, in_dialog, in_control, depth, in_listbox=False):
         if depth > 120 or over[0]: return
         if deadline is not None and time.time() > deadline:
             over[0] = True; sys.stderr.write(f"[axhelper] read stopped at its {budget:g} s budget after {len(out)} elements\n"); return
@@ -187,6 +187,9 @@ def snapshot(include_text=False):
             # "SP Consent Message" showed no buttons at all): those are part of what a person has to deal with
             if fh and host and fh != host and not CMP_HOSTS.search(fh): return
         role = SUBROLE.get(sub) or ROLE.get(role_ax)
+        # a custom listbox (aria-haspopup=listbox popovers: Newegg's sort) lists its choices as bare text: those ARE options
+        if in_listbox and role_ax == "AXStaticText": role = "menu item"
+        this_listbox = role_ax == "AXList" and str(g(14) or "") == "list box"
         if sub in LANDMARK: region = region or LANDMARK[sub]
         if role == "dialog": in_dialog = True
         kids = g(5)
@@ -198,7 +201,7 @@ def snapshot(include_text=False):
         if role in ("static",) and (not include_text or in_control): keep = False
         if keep:
             name = text_of(g(2)) or text_of(g(3))
-            if role == "static": name = text_of(g(4))
+            if role == "static" or role_ax == "AXStaticText": name = text_of(g(4))
             if not name and role in ("link", "push button", "heading", "menu item", "page tab"):
                 # Chrome leaves many link/button titles empty and puts the text in children
                 parts = []
@@ -245,7 +248,7 @@ def snapshot(include_text=False):
                 out.append(el)
         child_in_control = in_control or (role in ACTIONABLE) or role == "heading"
         if kids:
-            for c in kids: walk(c, region, in_dialog, child_in_control, depth + 1)
+            for c in kids: walk(c, region, in_dialog, child_in_control and not this_listbox, depth + 1, this_listbox or (in_listbox and role_ax == "AXGroup"))
     walk(web, None, False, False, 0)
     elements = omni_el + out
     return {"page": page_info(web), "elements": elements, "viewport": {"top": 0, "bottom": vh, "width": vw}}
@@ -519,6 +522,19 @@ CMDS = {
     "choose_native": lambda a: choose_native(a["ref"], a["option"]),
 }
 
+def front():
+    # COMPUTER_USE_FOREGROUND=1: the person lets this Chrome take the front while it works (Alex, 2026-11-25), so
+    # menus, focus and keystrokes behave exactly as they do for a person at the keyboard
+    from AppKit import NSRunningApplication, NSApplicationActivateIgnoringOtherApps
+    ra = NSRunningApplication.runningApplicationWithProcessIdentifier_(PID)
+    ok = bool(ra and ra.activateWithOptions_(NSApplicationActivateIgnoringOtherApps))
+    w = window()
+    if w is not None: AXUIElementPerformAction(w, "AXRaise")
+    return {"ok": ok}
+CMDS["front"] = lambda a: front()
+import os as _os
+FOREGROUND = _os.environ.get("COMPUTER_USE_FOREGROUND") == "1"
+
 # stdin on a thread; every accessibility call on the main thread, between turns of its run loop (observer callbacks)
 INQ = queue.Queue()
 def reader():
@@ -536,6 +552,13 @@ _t0 = time.time()
 while time.time() - _t0 < 20 and window() is None:
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, False)
 start_observer()
+if FOREGROUND: front()
+ACTING = {"press", "action", "focus", "select_all", "set_value", "key", "type", "choose_native", "press_at", "wheel", "navigate"}
+def keep_front():
+    # someone clicked elsewhere mid-task: take the front back before acting (only with COMPUTER_USE_FOREGROUND=1)
+    from AppKit import NSWorkspace
+    app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if app is None or app.processIdentifier() != PID: front(); time.sleep(0.15)
 reply({"id": 0, "ok": True, "result": {"ready": True, "trusted": bool(AXIsProcessTrusted()), "pid": PID, "window": window() is not None}})
 while True:
     # 20 ms turns: observer callbacks still land, commands wait at most 20 ms, and an idle helper costs ~nothing
@@ -548,6 +571,7 @@ while True:
     except Exception as e:
         reply({"id": None, "ok": False, "error": f"bad request: {e}"}); continue
     try:
+        if FOREGROUND and req.get("cmd") in ACTING: keep_front()
         fn = CMDS.get(req.get("cmd"))
         if fn is None: raise KeyError(f"unknown cmd {req.get('cmd')}")
         res = fn(req)

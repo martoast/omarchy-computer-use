@@ -49,7 +49,9 @@ export async function spawnMacInstance({ url = "about:blank", profileKey = proce
   ];
   // -n: a new instance (its own profile), -g: in the background (no focus taken), -j: launched hidden is NOT used:
   // a hidden app has no on-screen window, and Chrome then stops building frames
-  spawn("open", ["-n", "-g", "-a", APP, "--args", ...args], { stdio: "ignore", detached: true }).unref();
+  // COMPUTER_USE_FOREGROUND=1: launched in front and kept there while it works (the helper re-fronts it before acting)
+  const fg = process.env.COMPUTER_USE_FOREGROUND === "1";
+  spawn("open", ["-n", ...(fg ? [] : ["-g"]), "-a", APP, "--args", ...args], { stdio: "ignore", detached: true }).unref();
   const t0 = Date.now();
   let pid = null;
   while (!(pid = pidFor(profileDir))) {
@@ -60,7 +62,7 @@ export async function spawnMacInstance({ url = "about:blank", profileKey = proce
 }
 
 export function macInstanceEnv(h) {
-  return { COMPUTER_USE_BACKEND: "ax", COMPUTER_USE_AX_PID: String(h.pid) };
+  return { COMPUTER_USE_BACKEND: "ax", COMPUTER_USE_AX_PID: String(h.pid), COMPUTER_USE_FOREGROUND: process.env.COMPUTER_USE_FOREGROUND === "1" ? "1" : "0" };
 }
 
 export async function teardownMacInstance(h) {
