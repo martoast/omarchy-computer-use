@@ -124,6 +124,8 @@ def elem(ref):
     return e
 
 # ---- snapshot -------------------------------------------------------------------------------------------------------
+import re as _re
+CMP_HOSTS = _re.compile(r"sourcepoint|privacy-mgmt|consent|onetrust|cookielaw|cookiebot|trustarc|truste|didomi|usercentrics|quantcast|cmp\.|clarip|termly|iubenda", _re.I)
 # macOS accessibility roles -> the AT-SPI names observation.mjs maps
 ROLE = {"AXButton": "push button", "AXLink": "link", "AXTextField": "entry", "AXTextArea": "entry", "AXSearchField": "entry",
         "AXComboBox": "combo box", "AXPopUpButton": "combo box", "AXCheckBox": "check box", "AXRadioButton": "radio button",
@@ -180,7 +182,9 @@ def snapshot(include_text=False):
         # nested web areas are frames: same-site frames are part of the page, ad frames (other hosts) are not
         if role_ax == "AXWebArea" and e != web:
             fh = (text_of(g(12)).split("/") + ["", "", ""])[2]
-            if fh and host and fh != host: return
+            # other-site frames are ads, EXCEPT the consent managers whose banner IS a frame (Formula 1's Sourcepoint
+            # "SP Consent Message" showed no buttons at all): those are part of what a person has to deal with
+            if fh and host and fh != host and not CMP_HOSTS.search(fh): return
         role = SUBROLE.get(sub) or ROLE.get(role_ax)
         if sub in LANDMARK: region = region or LANDMARK[sub]
         if role == "dialog": in_dialog = True
