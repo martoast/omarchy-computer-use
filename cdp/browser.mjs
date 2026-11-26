@@ -69,8 +69,10 @@ const FN_FACTS = `function(...els) {
 }`;
 
 export class Browser {
-  constructor({ httpUrl, log = () => {} }) {
-    this.httpUrl = httpUrl; this.log = log;
+  // mine: the person's own Chrome (cdp/mine.mjs). Then the browser works only in a window it opened, and in tabs that
+  // window's pages open (this.ours); it never attaches to, reads or closes one of the person's own tabs.
+  constructor({ httpUrl, log = () => {}, mine = false, startUrl = "about:blank" }) {
+    this.httpUrl = httpUrl; this.log = log; this.mine = mine; this.startUrl = startUrl; this.ours = new Set();
     this.refs = new Map();      // ref -> { backendNodeId, sessionId }
     this.refOf = new Map();     // backendNodeId -> ref
     this.nextRef = 1;
@@ -83,9 +85,17 @@ export class Browser {
     // a link that opens a new tab: follow it, like a person looking at the browser would
     this.cdp.on("Target.targetCreated", async ({ targetInfo }) => {
       if (targetInfo.type !== "page" || !this.page || targetInfo.openerId !== this.page.targetId) return;
+      this.ours.add(targetInfo.targetId);
       this.newTab = targetInfo.targetId;
     });
-    this.cdp.on("Target.targetDestroyed", ({ targetId }) => { if (this.page && targetId === this.page.targetId) this.pageGone = true; });
+    this.cdp.on("Target.targetDestroyed", ({ targetId }) => { this.ours.delete(targetId); if (this.page && targetId === this.page.targetId) this.pageGone = true; });
+    if (this.mine) {
+      // a window of our own, in the background: the person's tabs and focus stay as they were
+      const { targetId } = await this.cdp.send("Target.createTarget", { url: this.startUrl, newWindow: true, background: true });
+      this.ours.add(targetId); this.window = targetId;
+      await this.attach(targetId);
+      return this;
+    }
     const { targetInfos } = await this.cdp.send("Target.getTargets");
     let t = targetInfos.find((x) => x.type === "page" && !x.url.startsWith("devtools://"));
     if (!t) t = { targetId: (await this.cdp.send("Target.createTarget", { url: "about:blank" })).targetId };
@@ -94,12 +104,22 @@ export class Browser {
   }
 
   async attach(targetId) {
+    if (this.mine && !this.ours.has(targetId)) throw new Error("refused: that tab is the person's own, not one this session opened");
     const { sessionId } = await this.cdp.send("Target.attachToTarget", { targetId, flatten: true });
     this.page = new PageSession(this.cdp, targetId, sessionId); this.settledSeq = -1;
     await this.page.init();
-    await this.cdp.send("Target.activateTarget", { targetId }).catch(() => {});
+    // a background window of the person's Chrome is throttled like any hidden tab: pages act as if focused
+    if (this.mine) await this.page.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+    // activating raises the tab (and its window) in front of the person: not in their own browser
+    if (!this.mine) await this.cdp.send("Target.activateTarget", { targetId }).catch(() => {});
     this.pageGone = false; this.newTab = null;
     this.refs.clear(); this.refOf.clear();
+  }
+
+  // leaving: in the person's own Chrome close only what this session opened, never the browser
+  async close() {
+    if (this.mine) for (const id of [...this.ours]) await this.cdp.send("Target.closeTarget", { targetId: id }, undefined, { timeoutMs: 2000 }).catch(() => {});
+    try { this.cdp.ws.close(); } catch {}
   }
 
   // switch to a tab opened by the last action (or away from a closed one)
@@ -107,8 +127,12 @@ export class Browser {
     if (this.newTab) { const id = this.newTab; await this.attach(id); return `opened a new tab`; }
     if (this.pageGone) {
       const { targetInfos } = await this.cdp.send("Target.getTargets");
-      const t = targetInfos.find((x) => x.type === "page");
+      const t = targetInfos.find((x) => x.type === "page" && (!this.mine || this.ours.has(x.targetId)));
       if (t) { await this.attach(t.targetId); return "the tab closed; now on the remaining tab"; }
+      if (this.mine) {
+        const { targetId } = await this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: true });
+        this.ours.add(targetId); await this.attach(targetId); return "the tab closed; opened a new window of our own (about:blank)";
+      }
     }
     return null;
   }

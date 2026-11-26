@@ -30,6 +30,19 @@ export class CDP {
   }
 
   static async connect(httpUrl, { timeoutMs = 15000 } = {}) {
+    // a ws:// URL straight to the browser endpoint: the person's own Chrome (cdp/mine.mjs) serves no /json/version, and
+    // the socket opens only once they click Allow in Chrome's dialog, so the wait is long
+    if (/^wss?:\/\//.test(httpUrl)) {
+      const ws = new WebSocket(httpUrl);
+      await new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error("Chrome did not allow the session within 90 s (click Allow in Chrome's remote-debugging dialog)")), 90000);
+        ws.addEventListener("open", () => { clearTimeout(t); res(); }, { once: true });
+        ws.addEventListener("error", () => { clearTimeout(t); rej(new Error(`could not reach your Chrome at ${httpUrl.replace(/browser\/.*/, "browser/…")} (is it still running with remote debugging on?)`)); }, { once: true });
+      });
+      const c = new CDP(ws);
+      c.version = await c.send("Browser.getVersion").then((v) => ({ Browser: v.product, ...v })).catch(() => ({}));
+      return c;
+    }
     const t0 = Date.now();
     let info;
     for (;;) {

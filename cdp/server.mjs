@@ -4,6 +4,8 @@
 //
 //   COMPUTER_USE_CDP_URL=http://127.0.0.1:<port>   drive that browser (an instance from cdp/instance.mjs)
 //   (unset)                                         start a private browser of our own (COMPUTER_USE_CDP_HEADLESS=0: with a window)
+//   COMPUTER_USE_BROWSER=mine                       the person's own running Chrome, signed in (cdp/mine.mjs): its own
+//                                                   window only; never for benchmarks
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -17,7 +19,14 @@ import { observe, renderObservation, actionOutcome, renderOutcome } from "../obs
 const log = (...a) => process.stderr.write(`[cdp] ${a.join(" ")}\n`);
 let own = null, browser;
 const bye = (td) => () => { Promise.resolve(td()).finally(() => process.exit(0)); };
-if (process.env.COMPUTER_USE_BACKEND === "ax") {
+const MINE = process.env.COMPUTER_USE_BROWSER === "mine";
+if (MINE) {
+  const { findMyChrome } = await import("./mine.mjs");
+  const ep = findMyChrome();
+  log(`attaching to your Chrome (${ep.userDataDir}); click Allow in Chrome if it asks`);
+  browser = await new CdpBrowser({ httpUrl: ep.wsUrl, log, mine: true }).connect();
+  log(`connected to your ${browser.cdp.version?.Browser || "Chrome"}: working in a window of its own`);
+} else if (process.env.COMPUTER_USE_BACKEND === "ax") {
   // macOS: a real Google Chrome read and driven through the accessibility API (no DevTools port; mac/)
   const { Browser: AxBrowser } = await import("../mac/browser.mjs");
   const mi = await import("../mac/instance.mjs");
@@ -48,7 +57,7 @@ if (process.env.COMPUTER_USE_BACKEND === "ax") {
 // backend's python helper is a child with open pipes, and on 2026-11-25 every benchmark task left its cores (and their
 // helpers) running: 1,002 helpers and a load average of 800 on the Mac mini. Our own instance is torn down first.
 let leaving = false;
-const leave = () => { if (leaving) return; leaving = true; try { browser?.close?.(); } catch {} const t = own && process.env.COMPUTER_USE_BACKEND === "ax" ? import("../mac/instance.mjs").then((m) => m.teardownMacInstance(own)) : own ? teardownCdpInstance(own) : null; Promise.resolve(t).catch(() => {}).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
+const leave = () => { if (leaving) return; leaving = true; const closed = Promise.resolve().then(() => browser?.close?.()).catch(() => {}); const t = own && process.env.COMPUTER_USE_BACKEND === "ax" ? import("../mac/instance.mjs").then((m) => m.teardownMacInstance(own)) : own ? teardownCdpInstance(own) : null; Promise.all([closed, Promise.resolve(t).catch(() => {})]).finally(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
 process.stdin.on("end", leave); process.stdin.on("close", leave);
 
 const server = new McpServer({ name: "computer-use", version: "0.2.0" });

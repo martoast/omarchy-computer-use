@@ -54,7 +54,7 @@ import { observe, renderObservation, actionOutcome, renderOutcome } from "./obse
 // The browser backend (cdp/): the same web tools through the Chrome DevTools Protocol. The only backend on macOS
 // (no AT-SPI there); on Linux opt-in with COMPUTER_USE_BACKEND=cdp. The rest of this file is the AT-SPI desktop backend
 // and never runs when the CDP server takes over (the pending await keeps this module from going further).
-if (process.env.COMPUTER_USE_BACKEND === "cdp" || (process.platform === "darwin" && process.env.COMPUTER_USE_BACKEND !== "atspi")) {
+if (process.env.COMPUTER_USE_BACKEND === "cdp" || process.env.COMPUTER_USE_BROWSER === "mine" || (process.platform === "darwin" && process.env.COMPUTER_USE_BACKEND !== "atspi")) {
   await import("./cdp/server.mjs");
   await new Promise(() => {});
 }
