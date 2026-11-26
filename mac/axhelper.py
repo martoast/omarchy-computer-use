@@ -315,10 +315,29 @@ def key(name, modifiers=()):
         post_key(LETTER.get(low, 0), flags, name); return True
     return False
 
-def type_text(s):
+DIGIT = {"1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25, "0": 29}
+
+def type_text(s, ref=None):
+    # Paced by CONFIRMATION: each character goes with its own key code, and with a field to watch we wait (up to 250 ms)
+    # until its value changed before the next one. Every character as key code 0, 4 ms apart, was dropped by sites with
+    # a heavy input handler ("basketballshoes", "Mllennium Falcon"; a 40 ms handler kept only "bas" of "basketball shoes").
+    e = None
+    if ref:
+        try: e = elem(ref)
+        except Exception: e = None
+    def cur():
+        try: return text_of(attr(e, "AXValue")) if e is not None else None
+        except Exception: return None
     for ch in str(s):
         if ch == "\n": post_key(36); continue
-        post_key(0, 0, ch)
+        before = cur()
+        code = 49 if ch == " " else LETTER.get(ch.lower(), DIGIT.get(ch, 0))
+        post_key(code, 0, ch)
+        if before is None: time.sleep(0.012); continue
+        t0 = time.time()
+        while time.time() - t0 < 0.25:
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.005, False)
+            if cur() != before: break
     return True
 
 def act(ref, action):
@@ -528,7 +547,7 @@ CMDS = {
     "elem_info": lambda a: info_of(a["ref"]),
     "options": lambda a: {"options": children_named(a["ref"], a.get("role", "AXMenuItem"))},
     "key": lambda a: {"ok": key(a["name"], a.get("modifiers", []))},
-    "type": lambda a: {"ok": type_text(a["text"])},
+    "type": lambda a: {"ok": type_text(a["text"], a.get("ref"))},
     "navigate": lambda a: navigate(a["url"]),
     "windows": lambda a: {"windows": windows()},
     "screenshot": lambda a: screenshot(a.get("region")),

@@ -261,7 +261,7 @@ export class Browser {
         if (left.value) { await this.call("key", { name: "a", modifiers: ["cmd"] }); await this.call("key", { name: "BackSpace" }); }
       }
     }
-    await this.call("type", { text: String(value) }, 60000);
+    await this.call("type", { text: String(value), ref: t.ref }, 60000);
     await sleep(120);
     let got = (await this.call("value", { ref: t.ref }).catch(() => ({ value: null }))).value;
     // the site swapped the field for a new one when it got focus (Wikipedia's search): read the field that has focus
@@ -269,7 +269,16 @@ export class Browser {
       const f = await this.call("focused_value").catch(() => null);
       if (f && /TextField|ComboBox|TextArea|SearchField/.test(f.role || "")) got = f.value;
     }
-    const typedOk = got != null && got.toLowerCase().includes(String(value).toLowerCase().slice(0, 40));
+    let typedOk = got != null && got.toLowerCase().includes(String(value).toLowerCase().slice(0, 40));
+    // still not what was asked: clear and type it once more (paced), then read it back again
+    if (!typedOk && got != null) {
+      await this.call("select_all", { ref: t.ref }).catch(() => {});
+      await this.call("key", { name: "BackSpace" }).catch(() => {});
+      await this.call("type", { text: String(value), ref: t.ref }, 60000);
+      await sleep(150);
+      got = (await this.call("value", { ref: t.ref }).catch(() => ({ value: got }))).value;
+      typedOk = got != null && got.toLowerCase().includes(String(value).toLowerCase().slice(0, 40));
+    }
     let text = typedOk ? `Typed ${JSON.stringify(value)} into ${this.label(t)} (verified: the field reads ${JSON.stringify(String(got).slice(0, 80))})`
       : `Typed ${JSON.stringify(value)} into ${this.label(t)} — UNVERIFIED: the field reads ${JSON.stringify(String(got ?? "").slice(0, 80))}`;
     if (pressEnter) {
