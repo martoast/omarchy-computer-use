@@ -454,7 +454,16 @@ def choose_native(ref, want):
     if not items:
         post_key(53)
         return {"err": "the dropdown's menu did not open"}
-    names = [text_of(attr(i, "AXTitle")) for i in items]
+    def item_name(i):
+        # Chrome's native <select> menu: AXTitle is often empty (Soriana's "Sort By" listed blanks); the text is in
+        # AXDescription, AXValue or a child static text
+        n = text_of(attr(i, "AXTitle")) or text_of(attr(i, "AXDescription")) or text_of(attr(i, "AXValue"))
+        if not n:
+            for c in attr(i, "AXChildren") or []:
+                n = text_of(attr(c, "AXValue")) or text_of(attr(c, "AXTitle"))
+                if n: break
+        return " ".join(n.split())
+    names = [item_name(i) for i in items]
     pick = None
     for test in (lambda n: n.strip().lower() == want_l, lambda n: n.strip().lower().startswith(want_l), lambda n: want_l in n.lower()):
         for i, n in zip(items, names):
@@ -465,7 +474,7 @@ def choose_native(ref, want):
         return {"missing": True, "options": names[:15]}
     AXUIElementPerformAction(pick, "AXPress")
     time.sleep(0.25)
-    return {"chosen": text_of(attr(pick, "AXTitle")), "now": text_of(attr(e, "AXValue")) or text_of(attr(e, "AXTitle"))}
+    return {"chosen": item_name(pick), "now": text_of(attr(e, "AXValue")) or text_of(attr(e, "AXTitle"))}
 
 CMDS = {
     "snapshot": lambda a: snapshot(bool(a.get("include_text"))),
