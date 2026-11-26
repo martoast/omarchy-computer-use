@@ -156,6 +156,7 @@ def snapshot(include_text=False):
     vw, vh = size(attr(web, "AXSize")) or (0, 0)
     host = (text_of(attr(web, "AXURL")).split("/") + ["", "", ""])[2]
     out = []
+    below = [0]  # the lowest y seen so far: where an element without a position is placed (after it, in page order)
     # TIME BUDGET (2026-11-25): a giant table page (Basketball Reference) took 18 s to walk. Past the budget the walk
     # stops and returns what it has, in document order (header, search, top of the page first). Same rule as the Linux
     # bridge's COMPUTER_USE_READ_BUDGET_S.
@@ -189,6 +190,10 @@ def snapshot(include_text=False):
         if sub in LANDMARK: region = region or LANDMARK[sub]
         if role == "dialog": in_dialog = True
         kids = g(5)
+        # Chrome may refuse AXChildren INSIDE a batched read for some containers (an error value instead of the list):
+        # that pruned whole subtrees (filters, later results). Ask for the children on their own when it does.
+        if kids is None or not isinstance(kids, (list, tuple)) and not hasattr(kids, "__len__"):
+            kids = attr(e, "AXChildren")
         keep = role is not None
         if role in ("static",) and (not include_text or in_control): keep = False
         if keep:
@@ -206,7 +211,18 @@ def snapshot(include_text=False):
                 name = " ".join(p for p in parts if p).strip()
             name = " ".join(name.split())
             pos, sz = point(g(6)), size(g(7))
-            if pos and sz and sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
+            # Chrome gives an element BELOW THE FOLD no position at all: it is still on the page (acting on it scrolls it
+            # into view). Dropping those left only the first screen — 86 of 639 controls on a Newegg results page, no
+            # filters, no later results. Place it after the last positioned element, below the viewport, in page order.
+            # (Chrome reports them either with no position or with a ZERO size; display:none nodes are not in the tree)
+            if pos and (not sz or sz[0] <= 0 or sz[1] <= 0):
+                sz = (1, 1)                                   # a real position, no size: keep where it is
+            if not pos:
+                below[0] = max(below[0], vh) + 24             # no position at all: after the last one, below the fold
+                pos, sz = (origin[0], origin[1] + below[0]), (1, 1)
+            elif pos[1] - origin[1] > below[0]:
+                below[0] = pos[1] - origin[1]
+            if sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
                 x, y = pos[0] - origin[0], pos[1] - origin[1]
                 states = []
                 val = g(4)
