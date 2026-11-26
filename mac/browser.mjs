@@ -193,6 +193,14 @@ export class Browser {
   async scrollState() { const r = await this.call("scroll_pos").catch(() => ({ y: null })); return String(r.y); }
 
   async key(name, modifiers = []) {
+    // "ctrl+a" as ONE name (planners write it that way; ADO, Mac p5: FAILED unknown key "ctrl+a"): split it. On a Mac the
+    // editing shortcuts are Command, not Control: ctrl+a/c/v/x/z mean what a person means by them
+    if (typeof name === "string" && name.length > 1 && name.includes("+")) {
+      const parts = name.split("+").map((x) => x.trim()).filter(Boolean);
+      name = parts.pop(); modifiers = [...modifiers, ...parts.map((m) => m.toLowerCase())];
+    }
+    if (/^[acvxz]$/i.test(name) && modifiers.length === 1 && /^(ctrl|control)$/.test(modifiers[0])) modifiers = ["cmd"];
+    modifiers = modifiers.map((m) => (m === "control" ? "ctrl" : m === "command" || m === "super" ? "cmd" : m === "option" ? "alt" : m));
     const combo = [...modifiers, name].join("+");
     const scrolling = SCROLL_KEYS.has(name) && !modifiers.length;
     if (scrolling) await this.call("focus_page").catch(() => {});
