@@ -234,10 +234,10 @@ tool("read_after_navigation", {
 
 tool("page_text", {
   title: "Read the page's text (read-only)",
-  description: "The visible text of the page now open, IN the reply. By default the first max_chars characters (2,000). With `query`, only the lines that contain it (case-insensitive) with 2 lines before and after each, in page order: the cheap way to find a value on a long page. Use from_end for the end of the page.",
+  description: "The visible text of the page now open, IN the reply. By default max_chars characters (2,000) starting at the first heading of the page (the main content, past the navigation). With `query`, only the lines that contain it (case-insensitive) with 2 lines before and after each, in page order: the cheap way to find a value on a long page. Use from_end for the end of the page.",
   // inline:false is for programs (the benchmark's reader and final capture): it writes the whole text to a file and
   // returns {path, chars}. A planner has no file tool, so a path was a dead reply (56 of them in 70 Sonnet runs, b7).
-  inputSchema: z.object({ ...W, max_chars: z.number().int().min(200).max(8000000).optional(), from_end: z.boolean().default(false), query: z.string().optional(), inline: z.boolean().default(true) }).strict(),
+  inputSchema: z.object({ ...W, max_chars: z.number().int().min(200).max(8000000).optional(), from_end: z.boolean().default(false), from_start: z.boolean().default(false), query: z.string().optional(), inline: z.boolean().default(true) }).strict(),
 }, async (a) => {
   let t = await browser.pageText(8000000);
   if (a.inline === false) {
@@ -259,8 +259,18 @@ tool("page_text", {
     const body = out.join("\n");
     return { text: `Page text, the ${hits} line(s) containing "${a.query}" with their neighbours (page order):\n${body.length > cap ? body.slice(0, cap) + `\n(cut at ${cap} chars: narrow the query)` : body}` };
   }
-  const part = a.from_end ? t.slice(-cap) : t.slice(0, cap);
-  return { text: `Page text (${a.from_end ? "last" : "first"} ${part.length} of ${total} chars${total > part.length ? "; use query to find a value, or a larger max_chars" : ""}):\n${part}` };
+  if (a.from_end) { const part = t.slice(-cap); return { text: `Page text (last ${part.length} of ${total} chars):\n${part}` }; }
+  // main content first: a page's text opens with its navigation ("Skip to content / STORE / TICKETS ..."), which is not
+  // what a reader wants. Start at the page's first heading outside the banner and navigation, unless from_start is set.
+  let start = 0, head = null;
+  if (!a.from_start) {
+    const snap = await browser.snapshot({ includeText: false }).catch(() => null);
+    const hs = (snap?.elements || []).filter((e) => e.role === "heading" && String(e.name || "").trim().length > 2);
+    const h = hs.find((e) => !["banner", "navigation", "contentinfo", "complementary"].includes(e.region)) || hs[0];
+    if (h) { const i = t.indexOf(String(h.name).trim()); if (i > 0) { start = i; head = String(h.name).trim().slice(0, 80); } }
+  }
+  const part = t.slice(start, start + cap);
+  return { text: `Page text (${part.length} of ${total} chars, ${start ? `from the first heading "${head}" at char ${start}; from_start:true for the top of the page` : "from the top"}${total > start + part.length ? "; use query to find a value, or a larger max_chars" : ""}):\n${part}` };
 });
 
 tool("list_images", {
