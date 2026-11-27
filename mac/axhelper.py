@@ -397,7 +397,8 @@ def info_of(ref):
     return {"alive": alive, "x": pos[0] - origin[0] if pos else None, "y": pos[1] - origin[1] if pos else None,
             "w": sz[0] if sz else 0, "h": sz[1] if sz else 0, "vh": vh, "vw": vw,
             "expanded": attr(e, "AXExpanded"), "selected": attr(e, "AXSelected"), "value": text_of(attr(e, "AXValue")),
-            "focused": attr(e, "AXFocused"), "name": text_of(attr(e, "AXTitle")) or text_of(attr(e, "AXDescription"))}
+            "focused": attr(e, "AXFocused"), "name": text_of(attr(e, "AXTitle")) or text_of(attr(e, "AXDescription")),
+            "enabled": attr(e, "AXEnabled")}
 
 def children_named(ref, role="AXMenuItem"):
     # the options of an open native <select> or menu: [(ref, title)]

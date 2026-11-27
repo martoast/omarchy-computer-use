@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline";
 
+import fs from "node:fs";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OMNIBOX_NAME = "Address and search bar";
@@ -134,13 +135,29 @@ export class Browser {
     return { text: `Navigated to ${info.url || url}` };
   }
 
+  // the thing a step names may not be on the page YET (it loads after the rest): look again for up to 3 s while the page
+  // is still loading or changing, instead of failing at once or waiting for the whole page beforehand
+  async findReady(target, maxMs = 3000) {
+    const t0 = Date.now();
+    for (;;) {
+      const t = await this.find(target);
+      if (!t.error || !/^No element found/.test(t.error) || Date.now() - t0 >= maxMs) return t;
+      const i = await this.call("info").catch(() => null);
+      if (i && !i.busy && i.quiet_ms >= 600) return t;   // loaded and still: it is not coming
+      await sleep(200);
+    }
+  }
+
   async click(target, { button = "left", clicks = 1, observe = true } = {}) {
-    const t = await this.find(target);
+    const t = await this.findReady(target);
     if (t.error) return { text: t.error, isError: true };
     if (t.omnibox) return { text: `Clicked ${t.ref} entry "${OMNIBOX_NAME}" (the address bar: use type_into_element on it to open a URL)` };
     if (button !== "left" || clicks !== 1) return { text: `FAILED: only a single left click is available on this browser (accessibility press)`, isError: true };
-    const pre = await this.stateOf(t.ref);
+    let pre = await this.stateOf(t.ref);
     if (pre && !pre.alive) return { text: `ref "${t.ref}" is stale: the element is gone from the page (read_page again)`, isError: true };
+    // it shows but is not usable yet (sites enable a control when their script has loaded): wait for it, then say so
+    for (let k = 0; pre && pre.enabled === false && k < 20; k++) { await sleep(100); pre = await this.stateOf(t.ref); }
+    if (pre && pre.enabled === false) return { text: `FAILED: ${this.label(t)} is disabled (still disabled after 2 s): nothing was pressed`, isError: true };
     const before = await this.mark();
     this.actSeq++;
     // a text field: focus it (that is what a click on it does)
@@ -156,7 +173,7 @@ export class Browser {
   }
 
   async press(target) {
-    const t = await this.find(target);
+    const t = await this.findReady(target);
     if (t.error) return { text: t.error, isError: true };
     if (t.el?.role === "link") return { text: `Refused: ${this.label(t)} is a link; use click_element`, isError: true };
     this.actSeq++;
@@ -166,7 +183,7 @@ export class Browser {
   }
 
   async hover(target) {
-    const t = await this.find(target);
+    const t = await this.findReady(target);
     if (t.error) return { text: t.error, isError: true };
     return { text: `FAILED: hover is not available on this browser (it never moves the person's pointer); click ${this.label(t)} instead`, isError: true };
   }
@@ -182,7 +199,7 @@ export class Browser {
   }
 
   async scrollTo(target) {
-    const t = await this.find(target);
+    const t = await this.findReady(target);
     if (t.error) return { text: t.error, isError: true };
     const s = await this.stateOf(t.ref);
     if (!s || !s.alive) return { text: `ref "${t.ref}" is stale`, isError: true };
@@ -246,7 +263,7 @@ export class Browser {
   }
 
   async typeInto(target, value, { clear = true, pressEnter = false } = {}) {
-    const t = await this.find(target);
+    const t = await this.findReady(target);
     if (t.error) return { text: t.error, isError: true };
     if (t.omnibox) {
       let url = String(value).trim();
@@ -354,31 +371,71 @@ export class Browser {
     return { text: "give dialog_ref, dialog_text or control_ref", isError: true };
   }
 
-  // settled = usable: not loading, some content, and the page's change clock quiet (same rules as the CDP backend)
+  // settled = the page can be USED: it has content and its change clock has been quiet for quietMs. Chrome's own
+  // "loading" flag is NOT part of it by default (COMPUTER_USE_SETTLE=early): on real sites the flag stays up for seconds
+  // while ads, trackers and images finish, long after the controls a step needs are there (Alex watched the Mac runs
+  // wait on pages whose target had been on screen for a while; b7a: 45% of a round's time was tool time). The old rule
+  // (wait for the flag too) is COMPUTER_USE_SETTLE=load. A page that never goes quiet returns "usable_changing" after
+  // usableMs of having content. COMPUTER_USE_SETTLE_LOG=<file> logs every wait; with COMPUTER_USE_SETTLE_PROBE=1 a
+  // background watcher also logs when the OLD rule would have returned, so the saving is measured, not guessed.
   async waitSettled({ quietMs = 400, usableMs = 1500, maxMs = 15000, urlContains = null, notUrl = null } = {}) {
-    const t0 = Date.now();
-    let readySince = null, state = "loading", i = null;
-    const content = async () => { const s = await this.snapshot().catch(() => null); return s && s.elements.length >= 2; }; // the address bar plus anything on the page
+    const t0 = Date.now(), EARLY = (process.env.COMPUTER_USE_SETTLE || "early") !== "load", MIN = 6;
+    let readySince = null, contentSince = null, state = "loading", i = null, nEls = 0, lastCount = 0;
+    const count = async () => { const s = await this.snapshot().catch(() => null); nEls = s ? s.elements.length : 0; return nEls; };
+    const log = (o) => { const f = process.env.COMPUTER_USE_SETTLE_LOG; if (f) { try { fs.appendFileSync(f, JSON.stringify({ t: Date.now(), ...o }) + "\n"); } catch {} } };
     // nothing loaded and nothing of ours acted since the last settle: still settled
     i = await this.call("info").catch(() => null);
     if (i && !urlContains && this.settledAct === this.actSeq && this.settledLoads === i.loads && !i.busy && (!notUrl || i.url !== notUrl)) return { settled: true, reason: "already", state: "complete", ms: Date.now() - t0, ready_ms: 0, events: 0 };
     const startClock = i?.clock ?? 0;
+    const done = (reason) => {
+      this.settledAct = this.actSeq; this.settledLoads = i.loads;
+      const r = { settled: true, reason, state, ms: Date.now() - t0, ready_ms: (readySince ?? contentSince ?? Date.now()) - t0, events: i.clock - startClock };
+      log({ url: i.url, reason, ms: r.ms, busy: !!i.busy, elements: nEls, content_ms: contentSince != null ? contentSince - t0 : null });
+      if (i.busy && process.env.COMPUTER_USE_SETTLE_PROBE === "1") this.probeLoad(t0, i.url, r.ms, log);
+      return r;
+    };
     while (Date.now() - t0 < maxMs) {
       i = await this.call("info").catch(() => null);
       if (i) {
         state = i.busy ? "loading" : "complete";
         const urlOk = (!urlContains || i.url.includes(urlContains)) && (!notUrl || i.url !== notUrl);
-        if (!i.busy && urlOk) {
-          readySince = readySince ?? Date.now();
-          const seen = Date.now() - readySince >= 300;
-          const out = async (reason) => { if (!(await content()) && Date.now() - t0 < maxMs - 500) return null; this.settledAct = this.actSeq; this.settledLoads = i.loads; return { settled: true, reason, state, ms: Date.now() - t0, ready_ms: readySince - t0, events: i.clock - startClock }; };
-          if (seen && i.quiet_ms >= quietMs) { const r = await out("quiet"); if (r) return r; }
-          if (Date.now() - readySince >= usableMs) { const r = await out("usable_changing"); if (r) return r; }
-        } else readySince = null;
+        if (urlOk && (EARLY || !i.busy)) {
+          const now = Date.now();
+          if (!i.busy) readySince = readySince ?? now; else readySince = null;
+          // quiet: the change clock has been still for quietMs (and, once loaded, the page has been seen for 300 ms)
+          const quiet = i.quiet_ms >= quietMs && (i.busy || now - readySince >= 300);
+          const need = i.busy ? MIN : 2;                       // loading: real content; loaded: the address bar plus anything
+          const since = i.busy ? contentSince : readySince;    // how long the page has been usable
+          const due = quiet || (since != null && now - since >= usableMs);
+          // a snapshot is not free: take one when a return is due, and every 500 ms while a loading page has shown nothing yet
+          if (now - lastCount >= 250 && (due || (i.busy && contentSince == null && now - lastCount >= 500))) {
+            lastCount = now;
+            if ((await count()) >= need) {
+              contentSince = contentSince ?? Date.now();
+              if (quiet) return done(i.busy ? "usable_loading" : "quiet");
+              if (since != null && Date.now() - since >= usableMs) return done("usable_changing");
+            } else if (!i.busy && Date.now() - t0 >= maxMs - 500) return done(quiet ? "quiet" : "usable_changing");   // loaded and empty: the old rule's last resort
+          }
+        } else { readySince = null; }
       }
       await sleep(100);
     }
+    log({ url: i?.url, reason: "timeout", ms: Date.now() - t0, busy: !!i?.busy, elements: nEls, content_ms: contentSince != null ? contentSince - t0 : null });
     return { settled: false, reason: "timeout", state, ms: Date.now() - t0, events: 0 };
+  }
+  // measurement only: when would the old rule (loading flag down + quiet) have returned for this wait?
+  probeLoad(t0, url, earlyMs, log) {
+    (async () => {
+      const end = t0 + 20000;
+      while (Date.now() < end) {
+        await sleep(250);
+        const i = await this.call("info").catch(() => null);
+        if (!i) continue;
+        if (i.url !== url) return log({ url, probe: "left_page", early_ms: earlyMs, ms: Date.now() - t0 });
+        if (!i.busy && i.quiet_ms >= 400) return log({ url, probe: "load_rule", early_ms: earlyMs, ms: Date.now() - t0, saved_ms: Date.now() - t0 - earlyMs });
+      }
+      log({ url, probe: "still_loading_20s", early_ms: earlyMs, ms: 20000, saved_ms: 20000 - earlyMs });
+    })().catch(() => {});
   }
 
   async screenshot(region) {
