@@ -82,7 +82,7 @@ const W = { window_address: z.string().optional() };
 
 tool("read_page", {
   title: "Read the page structure (fast, cheap)",
-  description: "The default way to see what's on the page. Reads the browser's accessibility tree (the same tree screen readers use) and returns every interactive element (buttons, links, fields, checkboxes, dropdowns, dialogs) with a short ref like 'e3', its region and whether it is in view. Follow up with click_element/type_into_element using the ref. The address bar is the row 'Address and search bar' in [browser]: type a URL into it with press_enter to open a page. Only fall back to screenshot for something visual with no accessible representation.",
+  description: "The default way to see what's on the page. Reads the browser's accessibility tree (the same tree screen readers use) and returns every interactive element (buttons, links, fields, checkboxes, dropdowns, dialogs) with a short ref like 'e3', its region and whether it is in view. Follow up with click_element/type_into_element using the ref. The address bar is the row 'Address and search bar' in [browser]: type a URL into it with press_enter to open a page.",
   inputSchema: z.object({ ...W, filter_text: z.string().optional().describe("Only elements whose name contains this (case-insensitive)."), filter_role: z.string().optional().describe("Only elements of this role (several with |), e.g. 'push button', 'link', 'entry', 'combo box', 'heading', 'dialog'."),
     include_text: z.boolean().default(false).describe("Also include text/paragraphs for reading page content."), limit: z.number().int().min(10).max(2000).optional(), format: z.enum(["text", "compact"]).optional() }).strict(),
 }, async ({ filter_text, filter_role, include_text, limit }) => {
@@ -180,7 +180,7 @@ const MODS = new Set(["shift", "ctrl", "alt", "logo"]);
 
 tool("scroll", {
   title: "Scroll",
-  description: "Scroll the mouse wheel at (x, y) in window coordinates (the coordinates of a screenshot).",
+  description: "Scroll the mouse wheel at (x, y) in window coordinates (the coordinates of the regions read_page reports).",
   inputSchema: z.object({ x: z.number().int(), y: z.number().int(), direction: z.enum(["up", "down"]).default("down"), amount: z.number().int().min(1).max(50).default(5), ...W }).strict(),
 }, (a) => browser.wheel(a.x, a.y, a.direction, a.amount), { outcome: true });
 
@@ -210,8 +210,8 @@ tool("escape_page", {
 
 tool("click", {
   title: "Click the mouse (window coordinates)",
-  description: "Click at (x, y) in window coordinates (the coordinates of a screenshot). Prefer click_element for anything with a name.",
-  inputSchema: z.object({ x: z.number().int(), y: z.number().int(), coordinate_space: z.enum(["screen", "screenshot_crop"]).default("screen"), screenshot_id: z.string().optional(), button: z.enum(["left", "right", "middle"]).default("left"), clicks: z.number().int().min(1).max(3).default(1), ...W }).strict(),
+  description: "Click at (x, y) in window coordinates (the coordinates of the regions read_page reports). Prefer click_element for anything with a name.",
+  inputSchema: z.object({ x: z.number().int(), y: z.number().int(), button: z.enum(["left", "right", "middle"]).default("left"), clicks: z.number().int().min(1).max(3).default(1), ...W }).strict(),
 }, async (a) => { await browser.clickAt(a.x, a.y, { button: a.button, clicks: a.clicks }); return { text: `${a.button} click x${a.clicks} at (${a.x}, ${a.y})` }; }, { outcome: true });
 
 tool("type_text", {
@@ -325,13 +325,6 @@ tool("list_images", {
   inputSchema: z.object({ ...W, max_nodes: z.number().int().min(1).max(1000).optional(), min_size: z.number().int().min(0).max(2000).optional() }).strict(),
 }, async (a) => ({ text: JSON.stringify(await browser.images(a.max_nodes ?? 64, a.min_size ?? 0)) }));
 
-tool("screenshot", {
-  title: "Take a screenshot",
-  description: "Capture the browser window (or a region of it, in window coordinates) as a PNG. EXPENSIVE: costs image tokens. Pixel coordinates in the image are window coordinates for click/scroll (add the region's offset when a region was given).",
-  inputSchema: z.object({ region: z.object({ x: z.number().int(), y: z.number().int(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), ...W }).strict(),
-}, async (a) => {
-  const s = await browser.screenshot(a.region);
-  return { content: [{ type: "image", data: s.data, mimeType: "image/png" }, { type: "text", text: `Screenshot ${s.width}x${s.height}, window coordinates${a.region ? `; add the offset (${s.offset.x}, ${s.offset.y}) to pixel positions` : ""}.` }] };
-});
+// No screenshot tool, on purpose: this runtime reads the page through the accessibility tree and never through pixels.
 
 await server.connect(new StdioServerTransport());

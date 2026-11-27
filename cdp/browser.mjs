@@ -608,17 +608,6 @@ export class Browser {
     return { settled: false, reason: "timeout", state, ms: Date.now() - t0, events };
   }
 
-  async screenshot(region) {
-    const m = await this.page.send("Page.getLayoutMetrics");
-    const vw = m.cssVisualViewport?.clientWidth || 1280, vh = m.cssVisualViewport?.clientHeight || 800;
-    const dpr = await this.page.evaluate("devicePixelRatio").catch(() => 1);
-    const clip = region ? { x: region.x, y: region.y, width: region.width, height: region.height, scale: 1 / dpr } : { x: 0, y: 0, width: vw, height: vh, scale: 1 / dpr };
-    // clip coordinates are page coordinates: shift by the scroll position so (0,0) is the window's top-left
-    clip.x += m.cssVisualViewport?.pageX || 0; clip.y += m.cssVisualViewport?.pageY || 0;
-    const r = await this.page.send("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: false });
-    return { data: r.data, width: Math.round(clip.width), height: Math.round(clip.height), offset: region ? { x: region.x, y: region.y } : { x: 0, y: 0 } };
-  }
-
   async pageText(maxChars = 4000000) {
     const t = await this.page.evaluate(`document.body ? document.body.innerText : ""`).catch(() => "");
     return String(t).slice(0, maxChars);

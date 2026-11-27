@@ -413,28 +413,6 @@ def children_named(ref, role="AXMenuItem"):
 def windows():
     return [{"title": text_of(attr(w, "AXTitle"))} for w in (attr(APP, "AXWindows") or [])]
 
-def screenshot(region=None):
-    if not Quartz.CGPreflightScreenCaptureAccess():
-        return {"err": "screenshots need the Screen Recording permission for this python (System Settings > Privacy & Security > Screen & System Audio Recording)"}
-    import base64
-    wins = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
-    mine = [w for w in wins if w.get("kCGWindowOwnerPID") == PID and w.get("kCGWindowLayer") == 0 and w.get("kCGWindowBounds", {}).get("Height", 0) > 200]
-    if not mine: return {"err": "no browser window to capture"}
-    wid = mine[0]["kCGWindowNumber"]
-    img = Quartz.CGWindowListCreateImage(Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow, wid, Quartz.kCGWindowImageBoundsIgnoreFraming | Quartz.kCGWindowImageNominalResolution)
-    if img is None: return {"err": "capture failed"}
-    # crop to the web area
-    web = web_area(); wpos = point(attr(window(), "AXPosition")); pos = point(attr(web, "AXPosition")); sz = size(attr(web, "AXSize"))
-    if wpos and pos and sz:
-        ox, oy = pos[0] - wpos[0], pos[1] - wpos[1]
-        rx, ry, rw, rh = ox, oy, sz[0], sz[1]
-        if region: rx, ry, rw, rh = ox + region["x"], oy + region["y"], region["width"], region["height"]
-        img = Quartz.CGImageCreateWithImageInRect(img, Quartz.CGRectMake(rx, ry, rw, rh)) or img
-    data = Quartz.CFDataCreateMutable(None, 0)
-    dest = Quartz.CGImageDestinationCreateWithData(data, "public.png", 1, None)
-    Quartz.CGImageDestinationAddImage(dest, img, None); Quartz.CGImageDestinationFinalize(dest)
-    return {"err": None, "png": base64.b64encode(bytes(data)).decode(), "width": Quartz.CGImageGetWidth(img), "height": Quartz.CGImageGetHeight(img)}
-
 def web_origin():
     web = web_area()
     return web, (point(attr(web, "AXPosition")) or (0, 0))
@@ -550,7 +528,6 @@ CMDS = {
     "type": lambda a: {"ok": type_text(a["text"], a.get("ref"))},
     "navigate": lambda a: navigate(a["url"]),
     "windows": lambda a: {"windows": windows()},
-    "screenshot": lambda a: screenshot(a.get("region")),
     "trusted": lambda a: {"trusted": bool(AXIsProcessTrusted())},
     "press_at": lambda a: press_at(a["x"], a["y"]),
     "focus_page": lambda a: focus_page(),

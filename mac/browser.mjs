@@ -381,12 +381,6 @@ export class Browser {
     return { settled: false, reason: "timeout", state, ms: Date.now() - t0, events: 0 };
   }
 
-  async screenshot(region) {
-    const r = await this.call("screenshot", { region: region || null }, 20000).catch((e) => ({ err: e.message }));
-    if (r.err) throw new Error(r.err);
-    return { data: r.png, width: r.width, height: r.height, offset: region ? { x: region.x, y: region.y } : { x: 0, y: 0 } };
-  }
-
   async pageText(maxChars = 4000000) { return (await this.call("text", { max_chars: maxChars }, 30000)).text; }
 
   async images(cap = 64, minPx = 0) {
