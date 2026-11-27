@@ -62,7 +62,7 @@ export class Browser {
     this.cueSeen ||= new Map();
     for (const el of s.elements || []) { if (el.name || !el.ref) continue;
       const was = this.cueSeen.get(el.ref), sig = el.hint ? `${el.hint.how}|${el.hint.text}` : "";
-      if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(el.ref, "!unstable"); delete el.hint; } else this.cueSeen.set(el.ref, sig); }
+      if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(el.ref, "!unstable"); delete el.hint; el.hint_unstable = true; } else this.cueSeen.set(el.ref, sig); }
     this.last = s;
     return s;
   }

@@ -254,7 +254,7 @@ export class Browser {
         // a cue that CHANGES between two reads of the same control is dropped for good (Resy: one button was under
         // "Popular Cities" in one read and under "Locations" in the next; Kavak: a rotating placeholder text)
         const key = w.n.backendDOMNodeId, was = this.cueSeen.get(key), sig = h ? `${h.how}|${h.text}` : "";
-        if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(key, "!unstable"); h = null; } else this.cueSeen.set(key, sig);
+        if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(key, "!unstable"); h = null; el.hint_unstable = true; } else this.cueSeen.set(key, sig);
         if (h) el.hint = h;
       }
       if (role === "entry" && w.value != null) el.text_value = String(w.value);

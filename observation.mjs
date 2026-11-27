@@ -133,6 +133,9 @@ export function observe(snapshot, ctx = {}) {
     // separate marker after the name, never inside the quotes. LINE FORMAT 2 (2026-11-27).
     if (!name && el.hint?.text) e.hint = { how: el.hint.how === "near" ? "near" : "under", text: normName(el.hint.text).slice(0, 60) };
     if (e.hint) hinted.push(e);
+    // this control's cue changed between two reads in this session: no cue, and the flag is kept on the stored page so
+    // a builder can drop the cue from EVERY earlier row of the same control (same ref) in the session
+    if (el.hint_unstable) e.hint_unstable = true;
     if (el.off_site) e.off_site = true;
     const key = `${role}\u0000${name}\u0000${href || ""}\u0000${e.region}\u0000${e.value ?? ""}`;
     const prev = name ? seen.get(key) : undefined;
