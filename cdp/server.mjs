@@ -106,12 +106,18 @@ tool("read_page", {
     const t = byText(all).filter((e) => !e.dialog_root);
     if (t.length) { els = byText(all); notes.push(`No ${filter_role} contains "${filter_text}". The role filter was dropped: these ${t.length} element(s) of other roles contain it.`); }
   }
+  let gaps = null;
   if (NEIGH && filter_text && els.some((e) => !e.dialog_root)) {
-    const idx = new Map(all.map((e, i) => [e, i])), keep = new Set();
-    for (const e of els) { const i = idx.get(e); for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < all.length) keep.add(k); }
-    const hits = els.filter((e) => !e.dialog_root).length;
-    els = [...keep].sort((a, b) => a - b).map((i) => all[i]);
-    notes.push(`${hits} element(s) contain "${filter_text}"; each is shown with the 2 elements before and after it in page order.`);
+    // dialog roots pass every text filter (so an open dialog is seen); they are not hits and get no neighbours
+    const idx = new Map(all.map((e, i) => [e, i])), keep = new Set(), hitEls = els.filter((e) => !e.dialog_root);
+    for (const e of hitEls) { const i = idx.get(e); for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < all.length) keep.add(k); }
+    const order = [...keep].sort((a, b) => a - b);
+    els = [...els.filter((e) => e.dialog_root), ...order.map((i) => all[i]).filter((e) => !e.dialog_root)];
+    // where elements were skipped between two shown groups: said in the note, so far-apart lines are not read as
+    // neighbours and "first" is not judged from this subset (the render itself has no gap lines)
+    const groups = []; for (const i of order) { const g = groups.at(-1); if (g && i === g[1] + 1) g[1] = i; else groups.push([i, i]); }
+    gaps = groups.map(([a, b], k) => `${k === 0 ? (a > 0 ? `(${a} elements before) ` : "") : `(${a - groups[k - 1][1] - 1} elements skipped) `}${JSON.stringify(String(all[a].name || all[a].role).slice(0, 40))}${b > a ? ` … ${JSON.stringify(String(all[b].name || all[b].role).slice(0, 40))}` : ""}`).join(" ");
+    notes.push(`${hitEls.length} element(s) contain "${filter_text}"; each is shown with the 2 elements before and after it in page order. This is a SUBSET of the page, in ${groups.length} group(s): ${gaps}${order.at(-1) < all.length - 1 ? ` (${all.length - 1 - order.at(-1)} elements after)` : ""}. Do not judge what is first or last on the page from it.`);
   }
   if (DIALOG && (filter_text || filter_role)) {
     const dl = all.filter((e) => e.dialog_root && !els.includes(e));
