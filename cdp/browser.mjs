@@ -236,7 +236,9 @@ export class Browser {
     const want = String(text).toLowerCase();
     const roles = role ? String(role).toLowerCase().split("|").map((s) => s.trim()) : null;
     const roleOk = (e) => !roles || roles.includes(e.role) || roles.some((r) => (r === "button" && e.role === "push button") || (r === "textbox" && e.role === "entry") || (r === "combobox" && e.role === "combo box") || (r === "checkbox" && e.role === "check box") || (r === "radio" && e.role === "radio button"));
-    const hits = snap.elements.filter((e) => roleOk(e) && String(e.name).toLowerCase().includes(want));
+    let hits = snap.elements.filter((e) => roleOk(e) && String(e.name).toLowerCase().includes(want));
+    // a control with NO name is found by what it shows (dropdown "" = "All Day"): the only handle a caller has for it
+    if (!hits.length) hits = snap.elements.filter((e) => roleOk(e) && !String(e.name || "").trim() && e.in_doc !== false && String(e.value ?? e.text_value ?? "").toLowerCase() === want);
     if (!hits.length) return { error: `No element found matching "${text}"${role ? ` (role ${role})` : ""}` };
     const exact = hits.find((e) => e.name.toLowerCase() === want);
     const inView = (e) => e.cy >= 0 && e.cy <= snap.viewport.bottom;
@@ -522,14 +524,29 @@ export class Browser {
       const ok = String(native.now).toLowerCase() === String(native.chosen).toLowerCase();
       return { text: ok ? `Selected ${JSON.stringify(native.chosen)} in ${this.label(t)} [verified: the dropdown reads ${JSON.stringify(native.now)}]` : `FAILED: the dropdown reads ${JSON.stringify(native.now)}, not ${JSON.stringify(native.chosen)}`, isError: !ok };
     }
-    // a custom dropdown: open it, find the option by name, click it, read the dropdown back
+    // a custom dropdown: open it, find the option by name among what APPEARED, click it, read the dropdown back.
+    // (s1, 2026-11-27: three sites answered "No option found" 350 ms after the click: the list renders later, its items
+    // are plain text without a role, or it carries no name the model could have guessed. Now: the options are looked for
+    // for up to 2 s, among elements that are new since before the click first, plain text items included; and a miss
+    // says what did appear, so the caller can choose from it without looking at pixels.)
+    const before = new Set((await this.snapshot({ includeText: true })).elements.map((e) => `${e.role}\u0000${e.name}`));
     const open = await this.click({ ref: t.ref });
     if (open.isError) return open;
-    await sleep(350);
-    const snap = await this.snapshot();
-    const cands = snap.elements.filter((e) => e.ref !== t.ref && ["menu item", "radio button", "check box", "push button", "link", "list item"].includes(e.role));
-    const o = cands.find((e) => e.name.trim().toLowerCase() === want) || cands.find((e) => e.name.trim().toLowerCase().startsWith(want)) || cands.find((e) => e.name.toLowerCase().includes(want));
-    if (!o) return { text: `No option found matching ${JSON.stringify(optionText)} after opening ${this.label(t)}`, isError: true };
+    const OPT = ["menu item", "radio button", "check box", "push button", "link", "list item", "static", "paragraph"];
+    const norm = (x) => String(x || "").trim().toLowerCase();
+    const pick = (list) => list.find((e) => norm(e.name) === want) || list.find((e) => norm(e.name).startsWith(want)) || list.find((e) => norm(e.name).includes(want));
+    let o = null, fresh = [];
+    for (let k = 0; k < 5 && !o; k++) {
+      await sleep(k ? 400 : 350);
+      const snap = await this.snapshot({ includeText: true });
+      const cands = snap.elements.filter((e) => e.ref !== t.ref && OPT.includes(e.role) && e.name);
+      fresh = cands.filter((e) => !before.has(`${e.role}\u0000${e.name}`));
+      o = pick(fresh) || pick(cands.filter((e) => e.role !== "static" && e.role !== "paragraph"));
+    }
+    if (!o) {
+      const seen = [...new Set(fresh.map((e) => e.name.trim()))].slice(0, 15);
+      return { text: `No option found matching ${JSON.stringify(optionText)} after opening ${this.label(t)}. ${seen.length ? `After opening, these appeared: ${seen.join(" | ")}` : "Nothing new appeared after opening it (it may need a key press, or its options are not exposed to the accessibility tree)"}`, isError: true };
+    }
     const c = await this.click({ ref: o.ref });
     if (c.isError) return c;
     const st = await this.axState(t.backendNodeId);
