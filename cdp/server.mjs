@@ -110,7 +110,8 @@ tool("read_page", {
   if (NEIGH && filter_text && els.some((e) => !e.dialog_root)) {
     // dialog roots pass every text filter (so an open dialog is seen); they are not hits and get no neighbours
     const idx = new Map(all.map((e, i) => [e, i])), keep = new Set(), hitEls = els.filter((e) => !e.dialog_root);
-    for (const e of hitEls) { const i = idx.get(e); for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < all.length) keep.add(k); }
+    const chrome = (e) => e.in_doc === false || e.doc_class === "chrome" || e.region === "browser";   // the browser's own UI is never a neighbour
+    for (const e of hitEls) { const i = idx.get(e); for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < all.length && (k === i || !chrome(all[k]))) keep.add(k); }
     const order = [...keep].sort((a, b) => a - b);
     els = [...els.filter((e) => e.dialog_root), ...order.map((i) => all[i]).filter((e) => !e.dialog_root)];
     // where elements were skipped between two shown groups: said in the note, so far-apart lines are not read as
