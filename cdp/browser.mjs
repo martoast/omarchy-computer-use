@@ -164,7 +164,9 @@ export class Browser {
       if (role === "static") {
         // text inside a control or heading is that control's name already
         let p = parent.get(n.nodeId), skip = false;
-        for (let d = 0; p && d < 4; d++) { const pr = ROLE[byId.get(p)?.role?.value]; if (pr && (ACTIONABLE.has(pr) || pr === "heading" || pr === "paragraph")) { skip = true; break; } p = parent.get(p); }
+        // (a paragraph covers its text only when it HAS a name: Chrome gives <p> an empty name, and its text was then lost
+        // from every read: "1,234,567" and "Downloads all time" in <p> never appeared, even with include_text)
+        for (let d = 0; p && d < 4; d++) { const pn = byId.get(p), pr = ROLE[pn?.role?.value]; if (pr && (ACTIONABLE.has(pr) || pr === "heading" || (pr === "paragraph" && String(pn?.name?.value ?? "").trim()))) { skip = true; break; } p = parent.get(p); }
         if (skip || !name) continue;
       }
       // landmark / dialog ancestry
