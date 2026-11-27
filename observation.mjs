@@ -118,6 +118,7 @@ export function observe(snapshot, ctx = {}) {
   const raw = (snapshot.elements || []).filter((el) => el.ref || el.dialog_root);
   const seen = new Map();
   const out = [];
+  const hinted = [];
   for (const el of raw) {
     const role = ROLE_MAP[el.role];
     if (!role) continue;
@@ -131,6 +132,7 @@ export function observe(snapshot, ctx = {}) {
     // a control with no name carries a cue from the page (its label text, or the heading it sits under): shown as a
     // separate marker after the name, never inside the quotes. LINE FORMAT 2 (2026-11-27).
     if (!name && el.hint?.text) e.hint = { how: el.hint.how === "label" ? "label" : "under", text: normName(el.hint.text).slice(0, 60) };
+    if (e.hint) hinted.push(e);
     if (el.off_site) e.off_site = true;
     const key = `${role}\u0000${name}\u0000${href || ""}\u0000${e.region}\u0000${e.value ?? ""}`;
     const prev = name ? seen.get(key) : undefined;
@@ -155,6 +157,10 @@ export function observe(snapshot, ctx = {}) {
     omitted[e.view === "above" ? "above" : "below"]++;
     omitted.budget++;
   }
+  // a heading cue shared by more than 3 nameless controls on the page distinguishes nothing (a search box under the
+  // page's H1 with a row of icon buttons): dropped for those (Henry2, 2026-11-27). A label cue is always kept.
+  { const n = new Map(); for (const e of hinted) if (e.hint.how === "under") n.set(e.hint.text, (n.get(e.hint.text) || 0) + 1);
+    for (const e of hinted) if (e.hint.how === "under" && n.get(e.hint.text) > 3) delete e.hint; }
   return {
     v: OBS_VERSION,
     // the window title carries the browser's name (" - Chromium"): page noise on every read
