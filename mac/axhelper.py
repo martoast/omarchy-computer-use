@@ -145,6 +145,22 @@ def text_of(v):
     try: return str(v)
     except Exception: return ""
 
+def pick_cue(box, cands, heading):
+    """the cue of a nameless control, by geometry: a text box inside, above or left of the control's box and close;
+    else the heading above it; else nothing. Same function as cdp/browser.mjs pickCue."""
+    x, y, w, h = box; best = None
+    for c in cands:
+        cx, cy, cw, ch = c["box"]
+        ov_x = min(x + w, cx + cw) - max(x, cx); ov_y = min(y + h, cy + ch) - max(y, cy)
+        if ov_x > 0 and ov_y > 0 and cw <= w + 4 and ch <= h + 4: d = 0                       # a floating label inside the field
+        elif ov_x > 0 and cy + ch <= y + 4 and y - (cy + ch) <= 40: d = 1 + (y - (cy + ch))    # directly above
+        elif ov_y > 0 and cx + cw <= x + 4 and x - (cx + cw) <= 200: d = 50 + (x - (cx + cw))  # to the left, same row
+        else: continue
+        if best is None or d < best[0]: best = (d, c["text"])
+    if best: return {"how": "near", "text": best[1]}
+    if heading and heading["y"] <= y: return {"how": "under", "text": heading["text"]}
+    return None
+
 def snapshot(include_text=False):
     web = web_area()
     omni = omnibox()
@@ -164,11 +180,18 @@ def snapshot(include_text=False):
     budget = float(_os.environ.get("COMPUTER_USE_READ_BUDGET_S", "4") or 0)
     deadline = time.time() + budget if budget > 0 else None
     over = [False]
+    pending = []
     # CUE for a control with NO accessible name (dropdown "" = "All Day"): the nearest label-like text since the last
     # control, else the nearest heading above it. Stored apart from the name (el["hint"]), never inside it; none found =
     # no cue, never a guess. (2026-11-27: six of the pilot's 37 verified targets were nameless lines.)
-    cue = {"label": None, "heading": None}
-    def walk(e, region, in_dialog, in_control, depth, in_listbox=False):
+    # CUE v2 (Henry2's ruling after r1a: 3 of 11 cue sites were wrong or unstable because the cue followed TREE ORDER:
+    # ADO puts each floating label AFTER its field, so every cue was shifted by one). Now: a neighbouring text is a cue
+    # only by GEOMETRY (its box above, left of, or inside the control's box, close by), is called "near" (never
+    # "label": that word is for a real association, which already is the name), is never alert/status text, and a
+    # heading cue needs the heading above the control. Undecidable = no cue. browser.mjs drops a cue that changes
+    # between two reads of the same control.
+    cue = {"heading": None, "recent": [], "await": []}
+    def walk(e, region, in_dialog, in_control, depth, in_listbox=False, in_alert=False):
         if depth > 120 or over[0]: return
         if deadline is not None and time.time() > deadline:
             over[0] = True; sys.stderr.write(f"[axhelper] read stopped at its {budget:g} s budget after {len(out)} elements\n"); return
@@ -191,6 +214,7 @@ def snapshot(include_text=False):
             # "SP Consent Message" showed no buttons at all): those are part of what a person has to deal with
             if fh and host and fh != host and not CMP_HOSTS.search(fh): return
         role = SUBROLE.get(sub) or ROLE.get(role_ax)
+        if sub in ("AXApplicationAlert", "AXApplicationStatus", "AXApplicationLog", "AXApplicationMarquee", "AXApplicationTimer", "AXApplicationAlertDialog"): in_alert = True
         # a custom listbox (aria-haspopup=listbox popovers: Newegg's sort) lists its choices as bare text: those ARE options
         if in_listbox and role_ax == "AXStaticText": role = "menu item"
         this_listbox = role_ax == "AXList" and str(g(14) or "") == "list box"
@@ -202,9 +226,14 @@ def snapshot(include_text=False):
         if kids is None or not isinstance(kids, (list, tuple)) and not hasattr(kids, "__len__"):
             kids = attr(e, "AXChildren")
         keep = role is not None
-        if role_ax == "AXStaticText" and not in_control:
+        if role_ax == "AXStaticText" and not in_control and not in_alert:
             _t = " ".join(text_of(g(4)).split())
-            if 1 < len(_t) <= 60: cue["label"] = _t
+            _p, _s = point(g(6)), size(g(7))
+            if 1 < len(_t) <= 60 and _p and _s and _s[0] > 1 and _s[1] > 1:
+                rec = {"text": _t, "box": (_p[0] - origin[0], _p[1] - origin[1], _s[0], _s[1])}
+                cue["recent"] = (cue["recent"] + [rec])[-2:]
+                for w in cue["await"]: w["cands"].append(rec)       # the first text AFTER a nameless control (floating labels)
+                cue["await"] = []
         if role in ("static",) and (not include_text or in_control): keep = False
         if keep:
             name = text_of(g(2)) or text_of(g(3))
@@ -268,17 +297,18 @@ def snapshot(include_text=False):
                 elif role in ("combo box", "slider", "spin button") and val not in (None, ""): el["value"] = text_of(val)
                 if role_ax == "AXPopUpButton": el["native_select"] = True
                 if role == "link" and g(12) is not None: el["href"] = text_of(g(12))
-                if role == "heading" and name: cue["heading"], cue["label"] = name, None
-                elif role in ACTIONABLE:
-                    if not el["name"]:
-                        if cue["label"]: el["hint"] = {"how": "label", "text": cue["label"]}
-                        elif cue["heading"]: el["hint"] = {"how": "under", "text": cue["heading"]}
-                    cue["label"] = None          # a label belongs to the first control after it
+                if role == "heading" and name: cue["heading"] = {"text": name, "y": y}
+                elif role in ACTIONABLE and not el["name"]:
+                    w = {"el": el, "box": (x, y, sz[0], sz[1]), "cands": list(cue["recent"]), "heading": cue["heading"]}
+                    pending.append(w); cue["await"].append(w)
                 out.append(el)
         child_in_control = in_control or (role in ACTIONABLE) or role == "heading"
         if kids:
-            for c in kids: walk(c, region, in_dialog, child_in_control and not this_listbox, depth + 1, this_listbox or (in_listbox and role_ax == "AXGroup"))
+            for c in kids: walk(c, region, in_dialog, child_in_control and not this_listbox, depth + 1, this_listbox or (in_listbox and role_ax == "AXGroup"), in_alert)
     walk(web, None, False, False, 0)
+    for w in pending:
+        h = pick_cue(w["box"], w["cands"], w["heading"])
+        if h: w["el"]["hint"] = h
     elements = omni_el + out
     return {"page": page_info(web), "elements": elements, "viewport": {"top": 0, "bottom": vh, "width": vw}}
 

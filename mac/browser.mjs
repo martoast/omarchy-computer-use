@@ -58,6 +58,11 @@ export class Browser {
 
   async snapshot({ includeText = false } = {}) {
     const s = await this.call("snapshot", { include_text: includeText });
+    // a cue that CHANGES between two reads of the same control is dropped for good (same rule as cdp/browser.mjs)
+    this.cueSeen ||= new Map();
+    for (const el of s.elements || []) { if (el.name || !el.ref) continue;
+      const was = this.cueSeen.get(el.ref), sig = el.hint ? `${el.hint.how}|${el.hint.text}` : "";
+      if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(el.ref, "!unstable"); delete el.hint; } else this.cueSeen.set(el.ref, sig); }
     this.last = s;
     return s;
   }

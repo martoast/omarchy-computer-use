@@ -68,6 +68,23 @@ const FN_FACTS = `function(...els) {
   });
 }`;
 
+// the cue of a nameless control, by geometry (same rule as mac/axhelper.py pick_cue): a text box inside, above or left
+// of the control's box and close; else the heading above it; else nothing
+export function pickCue(b, cands, heading) {
+  let best = null;
+  for (const c of cands) { const k = c.box;
+    const ovx = Math.min(b.x + b.w, k.x + k.w) - Math.max(b.x, k.x), ovy = Math.min(b.y + b.h, k.y + k.h) - Math.max(b.y, k.y);
+    let d;
+    if (ovx > 0 && ovy > 0 && k.w <= b.w + 4 && k.h <= b.h + 4) d = 0;
+    else if (ovx > 0 && k.y + k.h <= b.y + 4 && b.y - (k.y + k.h) <= 40) d = 1 + (b.y - (k.y + k.h));
+    else if (ovy > 0 && k.x + k.w <= b.x + 4 && b.x - (k.x + k.w) <= 200) d = 50 + (b.x - (k.x + k.w));
+    else continue;
+    if (!best || d < best.d) best = { d, text: c.text }; }
+  if (best) return { how: "near", text: best.text };
+  if (heading && heading.y <= b.y) return { how: "under", text: heading.text };
+  return null;
+}
+
 export class Browser {
   constructor({ httpUrl, log = () => {} }) {
     this.httpUrl = httpUrl; this.log = log;
@@ -151,7 +168,7 @@ export class Browser {
       for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
     }
     for (const n of nodes) if (!seenIds.has(n.nodeId)) order.push(n);
-    const want = []; const cue = { label: null, heading: null };
+    const want = []; const cue = { heading: null, recent: [], await: [] };
     for (const n of order) {
       if (n.ignored || n.backendDOMNodeId == null) continue;
       const cr = n.role?.value;
@@ -161,10 +178,14 @@ export class Browser {
       const isText = role === "paragraph" || role === "static" || role === "list item";
       // CUE for a nameless control (same rule as mac/axhelper.py): the nearest label-like text since the last control,
       // else the nearest heading above; kept apart from the name
+      // CUE v2: by GEOMETRY, never tree order (see mac/axhelper.py pick_cue; Henry2's ruling after r1a). Here only the
+      // candidates are collected: the last two texts before a nameless control and the first one after it; never text
+      // inside a control, a heading, or an alert / status region.
       if (role === "static") { const t = String(n.name?.value ?? "").replace(/\s+/g, " ").trim();
         let p = parent.get(n.nodeId), inside = false;
-        for (let d = 0; p && d < 4; d++) { const pr = ROLE[byId.get(p)?.role?.value]; if (pr && (ACTIONABLE.has(pr) || pr === "heading")) { inside = true; break; } p = parent.get(p); }
-        if (!inside && t.length > 1 && t.length <= 60) cue.label = t; }
+        for (let d = 0; p && d < 8; d++) { const cr0 = byId.get(p)?.role?.value, pr = ROLE[cr0]; if ((pr && d < 4 && (ACTIONABLE.has(pr) || pr === "heading")) || ["alert", "status", "log", "marquee", "timer", "alertdialog"].includes(cr0)) { inside = true; break; } p = parent.get(p); }
+        if (!inside && t.length > 1 && t.length <= 60 && n.backendDOMNodeId != null) { const rec = { text: t, id: n.backendDOMNodeId };
+          cue.recent = [...cue.recent, rec].slice(-2); for (const w of cue.await) w.cueCands.push(rec); cue.await = []; } }
       if (isText && !includeText) continue;
       const name = String(n.name?.value ?? "").trim();
       if (role === "static") {
@@ -189,10 +210,10 @@ export class Browser {
       if (prop(n, "expanded") === true) states.push("expanded");
       if (prop(n, "disabled") === true) states.push("disabled");
       if (prop(n, "focused") === true) states.push("focused");
-      let hint = null;
-      if (role === "heading" && name) { cue.heading = name; cue.label = null; }
-      else if (ACTIONABLE.has(role)) { if (!name) hint = cue.label ? { how: "label", text: cue.label } : cue.heading ? { how: "under", text: cue.heading } : null; cue.label = null; }
-      want.push({ n, role, name, region, inDialog, states, value: n.value?.value, hint });
+      const w0 = { n, role, name, region, inDialog, states, value: n.value?.value };
+      if (role === "heading" && name) cue.heading = w0;
+      else if (ACTIONABLE.has(role) && !name) { w0.cueCands = [...cue.recent]; w0.cueHeading = cue.heading; cue.await.push(w0); }
+      want.push(w0);
     }
     // facts from the DOM for every kept node, one call: box, visibility, href, input type
     const objs = await Promise.all(want.map((w) => this.page.send("DOM.resolveNode", { backendNodeId: w.n.backendDOMNodeId, objectGroup: "cu-snap" }).then((r) => r.object?.objectId).catch(() => null)));
@@ -211,6 +232,13 @@ export class Browser {
       }
     }
     this.page.send("Runtime.releaseObjectGroup", { objectGroup: "cu-snap" }).catch(() => {});
+    // boxes of the few text nodes that are cue candidates of some nameless control, in one call
+    const cueBox = new Map(); this.cueSeen ||= new Map();
+    { const ids = [...new Set(want.flatMap((w) => (w.cueCands || []).map((c) => c.id)))].slice(0, 200);
+      const o2 = await Promise.all(ids.map((id) => this.page.send("DOM.resolveNode", { backendNodeId: id, objectGroup: "cu-snap" }).then((r) => r.object?.objectId).catch(() => null)));
+      const live2 = o2.map((o, i) => [o, ids[i]]).filter(([o]) => o);
+      if (live2.length) { try { const r = await this.page.send("Runtime.callFunctionOn", { objectId: live2[0][0], functionDeclaration: FN_FACTS, arguments: live2.map(([o]) => ({ objectId: o })), returnByValue: true }, { timeoutMs: 8000 });
+        (r.result?.value || []).forEach((f, j) => { if (f && f.vis) cueBox.set(live2[j][1], { x: f.x, y: f.y, w: f.w, h: f.h }); }); } catch {} } }
     const elements = [{ ref: this.refFor("omnibox", null, null), role: "entry", name: OMNIBOX_NAME, in_doc: false, text_value: info.url, cy: 0, states: [] }];
     want.forEach((w, i) => {
       const f = facts[i];
@@ -220,7 +248,15 @@ export class Browser {
       const el = { ref: this.refFor(w.n.backendDOMNodeId, w.n.backendDOMNodeId, this.page.sessionId), role, name: w.name, states: w.states,
         region: w.region || undefined, in_dialog: w.inDialog || undefined, cy: f.y + f.h / 2, cx: f.x + f.w / 2, w: f.w, h: f.h };
       if (role === "dialog") { el.dialog_root = true; el.in_dialog = true; }
-      if (w.hint && !el.name) el.hint = w.hint;
+      if (w.cueCands && !el.name) {
+        const boxOf = (id) => cueBox.get(id); const hi = w.cueHeading ? want.indexOf(w.cueHeading) : -1; const hf = hi >= 0 ? facts[hi] : null;
+        let h = pickCue({ x: f.x, y: f.y, w: f.w, h: f.h }, w.cueCands.map((c) => ({ text: c.text, box: boxOf(c.id) })).filter((c) => c.box), hf && hf.vis ? { text: w.cueHeading.name, y: hf.y } : null);
+        // a cue that CHANGES between two reads of the same control is dropped for good (Resy: one button was under
+        // "Popular Cities" in one read and under "Locations" in the next; Kavak: a rotating placeholder text)
+        const key = w.n.backendDOMNodeId, was = this.cueSeen.get(key), sig = h ? `${h.how}|${h.text}` : "";
+        if (was === "!unstable" || (was !== undefined && was !== sig)) { this.cueSeen.set(key, "!unstable"); h = null; } else this.cueSeen.set(key, sig);
+        if (h) el.hint = h;
+      }
       if (role === "entry" && w.value != null) el.text_value = String(w.value);
       else if ((role === "combo box" || role === "slider" || role === "spin button") && w.value != null && w.value !== "") el.value = String(w.value);
       if (role === "link" && f.href) el.href = f.href;
