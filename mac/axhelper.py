@@ -301,9 +301,13 @@ def snapshot(include_text=False):
                 # holds digits ("Showing 1-50 of 18,897 results"): Henry2 after pilot c1
                 if role == "heading" and name:
                     cue["nheads"] = cue.get("nheads", 0) + 1
-                    cue["heading"] = {"text": name, "y": y} if cue["nheads"] > 1 and not any(ch.isdigit() for ch in name) else None
+                    cue["heading"] = {"text": name, "y": y, "at": len(out), "region": region} if cue["nheads"] > 1 and not any(ch.isdigit() for ch in name) else None
                 elif role in ACTIONABLE and not el["name"]:
-                    w = {"el": el, "box": (x, y, sz[0], sz[1]), "cands": list(cue["recent"]), "heading": cue["heading"]}
+                    # an "under" cue only when the heading is CLOSE in the page: at most 5 elements between it and the
+                    # control, and the same region (a footer button under an unrelated heading far above: no cue)
+                    hd = cue["heading"]
+                    if hd and (len(out) - hd["at"] > 6 or hd["region"] != region): hd = None
+                    w = {"el": el, "box": (x, y, sz[0], sz[1]), "cands": list(cue["recent"]), "heading": hd}
                     pending.append(w); cue["await"].append(w)
                 out.append(el)
         child_in_control = in_control or (role in ACTIONABLE) or role == "heading"

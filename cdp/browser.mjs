@@ -213,7 +213,8 @@ export class Browser {
       const w0 = { n, role, name, region, inDialog, states, value: n.value?.value };
       // an "under" cue is never the page's FIRST heading (every control is under it) nor a heading with digits
       if (role === "heading" && name) { cue.nheads = (cue.nheads || 0) + 1; cue.heading = cue.nheads > 1 && !/\d/.test(name) ? w0 : null; }
-      else if (ACTIONABLE.has(role) && !name) { w0.cueCands = [...cue.recent]; w0.cueHeading = cue.heading; cue.await.push(w0); }
+      // an "under" cue only when the heading is CLOSE: at most 5 kept elements between it and the control, same region
+      else if (ACTIONABLE.has(role) && !name) { w0.cueCands = [...cue.recent]; const hd = cue.heading; w0.cueHeading = hd && want.length - want.indexOf(hd) <= 6 && (hd.region || null) === (region || null) ? hd : null; cue.await.push(w0); }
       want.push(w0);
     }
     // facts from the DOM for every kept node, one call: box, visibility, href, input type
