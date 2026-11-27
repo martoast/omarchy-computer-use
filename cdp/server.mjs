@@ -106,7 +106,7 @@ tool("read_page", {
     const t = byText(all).filter((e) => !e.dialog_root);
     if (t.length) { els = byText(all); notes.push(`No ${filter_role} contains "${filter_text}". The role filter was dropped: these ${t.length} element(s) of other roles contain it.`); }
   }
-  let gaps = null;
+  let gaps = null, gapBefore = null, gapAfter = 0;
   if (NEIGH && filter_text && els.some((e) => !e.dialog_root)) {
     // dialog roots pass every text filter (so an open dialog is seen); they are not hits and get no neighbours
     const idx = new Map(all.map((e, i) => [e, i])), keep = new Set(), hitEls = els.filter((e) => !e.dialog_root);
@@ -115,6 +115,11 @@ tool("read_page", {
     els = [...els.filter((e) => e.dialog_root), ...order.map((i) => all[i]).filter((e) => !e.dialog_root)];
     // where elements were skipped between two shown groups: said in the note, so far-apart lines are not read as
     // neighbours and "first" is not judged from this subset (the render itself has no gap lines)
+    // real gap lines inside the list, exactly where elements were skipped (Henry2: a warning on top of a list that still
+    // looks continuous is not enough; b5 failed rule 2 with one in place)
+    gapBefore = new Map(); let prevI = -1;
+    for (const i of order) { if (i - prevI - 1 > 0) gapBefore.set(all[i].ref, i - prevI - 1); prevI = i; }
+    gapAfter = all.length - 1 - prevI;
     const groups = []; for (const i of order) { const g = groups.at(-1); if (g && i === g[1] + 1) g[1] = i; else groups.push([i, i]); }
     gaps = groups.map(([a, b], k) => `${k === 0 ? (a > 0 ? `(${a} elements before) ` : "") : `(${a - groups[k - 1][1] - 1} elements skipped) `}${JSON.stringify(String(all[a].name || all[a].role).slice(0, 40))}${b > a ? ` … ${JSON.stringify(String(all[b].name || all[b].role).slice(0, 40))}` : ""}`).join(" ");
     notes.push(`${hitEls.length} element(s) contain "${filter_text}"; each is shown with the 2 elements before and after it in page order. This is a SUBSET of the page, in ${groups.length} group(s): ${gaps}${order.at(-1) < all.length - 1 ? ` (${all.length - 1 - order.at(-1)} elements after)` : ""}. Do not judge what is first or last on the page from it.`);
@@ -124,7 +129,14 @@ tool("read_page", {
     if (dl.length) { els = [...dl, ...els]; notes.push(`A dialog is open on the page (${dl.map((e) => JSON.stringify(String(e.name).slice(0, 60))).join(", ")}): it may cover what you are looking for.`); }
   }
   const obs = observe({ page: snap.page, elements: els }, { viewport: snap.viewport, budget: limit ?? (include_text ? 600 : 250) });
-  return { content: [{ type: "text", text: (notes.length ? notes.join("\n") + "\n" : "") + renderObservation(obs) }], ...(structured() ? { structuredContent: { observation: obs } } : {}) };
+  let body = renderObservation(obs);
+  if (gapBefore) {
+    const out = [];
+    for (const line of body.split("\n")) { const ref = /^(e\d+) /.exec(line)?.[1]; if (ref && gapBefore.get(ref)) out.push(`(${gapBefore.get(ref)} elements not shown)`); out.push(line); }
+    if (gapAfter > 0) out.push(`(${gapAfter} elements not shown)`);
+    body = out.join("\n");
+  }
+  return { content: [{ type: "text", text: (notes.length ? notes.join("\n") + "\n" : "") + body }], ...(structured() ? { structuredContent: { observation: obs } } : {}) };
 });
 
 const target = { ref: z.string().optional().describe("A ref like 'e3' from read_page."), text: z.string().optional().describe("Accessible name to search for (case-insensitive substring), if not using ref."), role: z.string().optional() };
