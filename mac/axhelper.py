@@ -212,7 +212,12 @@ def snapshot(include_text=False):
                         else: gather(k, d + 1)
                 gather(e)
                 name = " ".join(p for p in parts if p).strip()
+            # an option of a native <select> carries its text in AXValue (or nowhere while the menu is closed): pilot c0,
+            # 793 of 801 menu items on the stored Mac pages read menuitem "" (the planner could not see one option)
+            if not name and role == "menu item": name = text_of(g(4))
             name = " ".join(name.split())
+            # still nameless: the closed dropdown's own line already shows its value; an empty option line says nothing
+            nameless_option = not name and role == "menu item"
             pos, sz = point(g(6)), size(g(7))
             # Chrome gives an element BELOW THE FOLD no position at all: it is still on the page (acting on it scrolls it
             # into view). Dropping those left only the first screen — 86 of 639 controls on a Newegg results page, no
@@ -236,7 +241,7 @@ def snapshot(include_text=False):
                 pos, sz = (origin[0], origin[1] + below[0]), (1, 1)
             elif pos[1] - origin[1] > below[0]:
                 below[0] = pos[1] - origin[1]
-            if not skip and sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
+            if not skip and not nameless_option and sz[0] > 0 and sz[1] > 0 and (role != "static" or name):
                 x, y = pos[0] - origin[0], pos[1] - origin[1]
                 states = []
                 val = g(4)
@@ -506,9 +511,16 @@ def choose_native(ref, want):
     if pick is None:
         close(menus)
         return {"missing": True, "options": names[:15]}
+    chosen = item_name(pick)
     AXUIElementPerformAction(pick, "AXPress")
-    time.sleep(0.25)
-    return {"chosen": item_name(pick), "now": text_of(attr(e, "AXValue")) or text_of(attr(e, "AXTitle"))}
+    # read the dropdown's VALUE back, waiting for it: right after the menu closes it can be empty for a moment, and the
+    # title ("Sort products") was then reported as what the dropdown reads (a re-select of the same option "FAILED")
+    now = ""
+    for _ in range(10):
+        time.sleep(0.1)
+        now = text_of(attr(e, "AXValue"))
+        if now: break
+    return {"chosen": chosen, "now": now or text_of(attr(e, "AXTitle"))}
 
 CMDS = {
     "snapshot": lambda a: snapshot(bool(a.get("include_text"))),
