@@ -283,8 +283,12 @@ export class Browser {
       let cover = null;
       for (const [fx, fy] of pts) {
         const x = r.left + r.width * fx, y = r.top + r.height * fy;
-        const hit = doc.elementFromPoint(x, y);
-        if (hit && (hit === e || e.contains(hit) || hit.contains(e) || (e.labels && [...e.labels].some((l) => l.contains(hit))))) return { x: x + ox, y: y + oy, scrolled: scrollY !== before };
+        // the hit, through shadow roots: document.elementFromPoint stops at a shadow HOST, so a button inside a cookie
+        // banner built as a web component read as "covered by" its own banner (s1: dw.com div#cmpwrapper, chedraui)
+        let hit = doc.elementFromPoint(x, y);
+        for (let k = 0; k < 8 && hit && hit.shadowRoot; k++) { const n = hit.shadowRoot.elementFromPoint(x, y); if (!n || n === hit) break; hit = n; }
+        const within = (outer, inner) => { for (let n = inner; n; n = n.parentNode || n.host) if (n === outer) return true; return false; };   // crosses shadow boundaries, open or closed
+        if (hit && (hit === e || within(e, hit) || within(hit, e) || (e.labels && [...e.labels].some((l) => l.contains(hit))))) return { x: x + ox, y: y + oy, scrolled: scrollY !== before };
         if (hit && !cover) cover = (hit.closest("[role=dialog],dialog,[aria-modal=true]") ? "a dialog " : "") + hit.tagName.toLowerCase() + (hit.id ? "#" + hit.id : "") + (typeof hit.className === "string" && hit.className ? "." + hit.className.split(/\\s+/)[0] : "");
       }
       return { covered: cover || "something", x: r.left + r.width / 2 + ox, y: r.top + r.height / 2 + oy };
