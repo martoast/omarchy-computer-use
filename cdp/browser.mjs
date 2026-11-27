@@ -568,7 +568,26 @@ export class Browser {
       e.dispatchEvent(new Event("input", { bubbles: true })); e.dispatchEvent(new Event("change", { bubbles: true }));
       return { chosen: o.text.trim(), now: e.options[e.selectedIndex]?.text.trim() };
     }`, [want]).catch(() => null);
-    if (native) {
+    // a styled dropdown whose real control is a transparent <select> laid OVER it (Resy's time picker: the read shows the
+    // styled box, clicks on it answered "covered by select#time", and select_option found no option): the select that
+    // covers the target IS the dropdown; choose in it the same way
+    const cover = native ? null : await this.withNode(t.backendNodeId, `function(want) {
+      const e = this.nodeType === 1 ? this : this.parentElement; if (!e) return null;
+      e.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      const r = e.getBoundingClientRect(); let hit = e.ownerDocument.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      for (let k = 0; k < 8 && hit && hit.shadowRoot; k++) { const n = hit.shadowRoot.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!n || n === hit) break; hit = n; }
+      const sel = hit && hit.tagName === "SELECT" ? hit : (e.querySelector && e.querySelector("select")) || (e.parentElement && e.parentElement.querySelector(":scope > select"));
+      if (!sel || sel.tagName !== "SELECT") return null;
+      const opts = [...sel.options]; const norm = (s) => String(s).trim().toLowerCase();
+      const o = opts.find((x) => norm(x.text) === want) || opts.find((x) => norm(x.text).includes(want)) || opts.find((x) => norm(x.value) === want);
+      if (!o) return { missing: true, options: opts.slice(0, 15).map((x) => x.text.trim()) };
+      sel.focus(); sel.value = o.value; o.selected = true;
+      sel.dispatchEvent(new Event("input", { bubbles: true })); sel.dispatchEvent(new Event("change", { bubbles: true }));
+      return { chosen: o.text.trim(), now: sel.options[sel.selectedIndex]?.text.trim(), via: "the select that covers it" };
+    }`, [want]).catch(() => null);
+    const nat = native || cover;
+    if (nat) {
+      const native = nat;
       if (native.missing) return { text: `No option found matching ${JSON.stringify(optionText)} in ${this.label(t)}. Options: ${native.options.join(" | ")}`, isError: true };
       await sleep(400);
       const ok = String(native.now).toLowerCase() === String(native.chosen).toLowerCase();
