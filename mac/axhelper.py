@@ -297,7 +297,11 @@ def snapshot(include_text=False):
                 elif role in ("combo box", "slider", "spin button") and val not in (None, ""): el["value"] = text_of(val)
                 if role_ax == "AXPopUpButton": el["native_select"] = True
                 if role == "link" and g(12) is not None: el["href"] = text_of(g(12))
-                if role == "heading" and name: cue["heading"] = {"text": name, "y": y}
+                # a heading can be an "under" cue unless it is the page's FIRST heading (every control is under it) or it
+                # holds digits ("Showing 1-50 of 18,897 results"): Henry2 after pilot c1
+                if role == "heading" and name:
+                    cue["nheads"] = cue.get("nheads", 0) + 1
+                    cue["heading"] = {"text": name, "y": y} if cue["nheads"] > 1 and not any(ch.isdigit() for ch in name) else None
                 elif role in ACTIONABLE and not el["name"]:
                     w = {"el": el, "box": (x, y, sz[0], sz[1]), "cands": list(cue["recent"]), "heading": cue["heading"]}
                     pending.append(w); cue["await"].append(w)
@@ -306,8 +310,11 @@ def snapshot(include_text=False):
         if kids:
             for c in kids: walk(c, region, in_dialog, child_in_control and not this_listbox, depth + 1, this_listbox or (in_listbox and role_ax == "AXGroup"), in_alert)
     walk(web, None, False, False, 0)
+    # a text that IS the accessible name of another control is that control's label, never this one's cue (the Met:
+    # a dropdown took the label of the checkbox before it)
+    taken = {" ".join(str(x.get("name") or "").split()) for x in out if x.get("role") in ACTIONABLE and x.get("name")}
     for w in pending:
-        h = pick_cue(w["box"], w["cands"], w["heading"])
+        h = pick_cue(w["box"], [c for c in w["cands"] if c["text"] not in taken], w["heading"])
         if h: w["el"]["hint"] = h
     elements = omni_el + out
     return {"page": page_info(web), "elements": elements, "viewport": {"top": 0, "bottom": vh, "width": vw}}

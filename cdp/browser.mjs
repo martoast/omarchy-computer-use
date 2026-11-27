@@ -211,7 +211,8 @@ export class Browser {
       if (prop(n, "disabled") === true) states.push("disabled");
       if (prop(n, "focused") === true) states.push("focused");
       const w0 = { n, role, name, region, inDialog, states, value: n.value?.value };
-      if (role === "heading" && name) cue.heading = w0;
+      // an "under" cue is never the page's FIRST heading (every control is under it) nor a heading with digits
+      if (role === "heading" && name) { cue.nheads = (cue.nheads || 0) + 1; cue.heading = cue.nheads > 1 && !/\d/.test(name) ? w0 : null; }
       else if (ACTIONABLE.has(role) && !name) { w0.cueCands = [...cue.recent]; w0.cueHeading = cue.heading; cue.await.push(w0); }
       want.push(w0);
     }
@@ -234,6 +235,8 @@ export class Browser {
     this.page.send("Runtime.releaseObjectGroup", { objectGroup: "cu-snap" }).catch(() => {});
     // boxes of the few text nodes that are cue candidates of some nameless control, in one call
     const cueBox = new Map(); this.cueSeen ||= new Map();
+    // a text that IS the accessible name of another control is that control's label, never a cue for this one
+    const taken = new Set(want.filter((w) => ACTIONABLE.has(w.role) && w.name).map((w) => w.name.replace(/\s+/g, " ").trim()));
     { const ids = [...new Set(want.flatMap((w) => (w.cueCands || []).map((c) => c.id)))].slice(0, 200);
       const o2 = await Promise.all(ids.map((id) => this.page.send("DOM.resolveNode", { backendNodeId: id, objectGroup: "cu-snap" }).then((r) => r.object?.objectId).catch(() => null)));
       const live2 = o2.map((o, i) => [o, ids[i]]).filter(([o]) => o);
@@ -250,7 +253,7 @@ export class Browser {
       if (role === "dialog") { el.dialog_root = true; el.in_dialog = true; }
       if (w.cueCands && !el.name) {
         const boxOf = (id) => cueBox.get(id); const hi = w.cueHeading ? want.indexOf(w.cueHeading) : -1; const hf = hi >= 0 ? facts[hi] : null;
-        let h = pickCue({ x: f.x, y: f.y, w: f.w, h: f.h }, w.cueCands.map((c) => ({ text: c.text, box: boxOf(c.id) })).filter((c) => c.box), hf && hf.vis ? { text: w.cueHeading.name, y: hf.y } : null);
+        let h = pickCue({ x: f.x, y: f.y, w: f.w, h: f.h }, w.cueCands.filter((c) => !taken.has(c.text)).map((c) => ({ text: c.text, box: boxOf(c.id) })).filter((c) => c.box), hf && hf.vis ? { text: w.cueHeading.name, y: hf.y } : null);
         // a cue that CHANGES between two reads of the same control is dropped for good (Resy: one button was under
         // "Popular Cities" in one read and under "Locations" in the next; Kavak: a rotating placeholder text)
         const key = w.n.backendDOMNodeId, was = this.cueSeen.get(key), sig = h ? `${h.how}|${h.text}` : "";
