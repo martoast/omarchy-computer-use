@@ -151,7 +151,7 @@ export class Browser {
       for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
     }
     for (const n of nodes) if (!seenIds.has(n.nodeId)) order.push(n);
-    const want = [];
+    const want = []; const cue = { label: null, heading: null };
     for (const n of order) {
       if (n.ignored || n.backendDOMNodeId == null) continue;
       const cr = n.role?.value;
@@ -159,6 +159,12 @@ export class Browser {
       if (!role) continue;
       if (role === "push button" && prop(n, "pressed") !== undefined) role = "toggle button";
       const isText = role === "paragraph" || role === "static" || role === "list item";
+      // CUE for a nameless control (same rule as mac/axhelper.py): the nearest label-like text since the last control,
+      // else the nearest heading above; kept apart from the name
+      if (role === "static") { const t = String(n.name?.value ?? "").replace(/\s+/g, " ").trim();
+        let p = parent.get(n.nodeId), inside = false;
+        for (let d = 0; p && d < 4; d++) { const pr = ROLE[byId.get(p)?.role?.value]; if (pr && (ACTIONABLE.has(pr) || pr === "heading")) { inside = true; break; } p = parent.get(p); }
+        if (!inside && t.length > 1 && t.length <= 60) cue.label = t; }
       if (isText && !includeText) continue;
       const name = String(n.name?.value ?? "").trim();
       if (role === "static") {
@@ -183,7 +189,10 @@ export class Browser {
       if (prop(n, "expanded") === true) states.push("expanded");
       if (prop(n, "disabled") === true) states.push("disabled");
       if (prop(n, "focused") === true) states.push("focused");
-      want.push({ n, role, name, region, inDialog, states, value: n.value?.value });
+      let hint = null;
+      if (role === "heading" && name) { cue.heading = name; cue.label = null; }
+      else if (ACTIONABLE.has(role)) { if (!name) hint = cue.label ? { how: "label", text: cue.label } : cue.heading ? { how: "under", text: cue.heading } : null; cue.label = null; }
+      want.push({ n, role, name, region, inDialog, states, value: n.value?.value, hint });
     }
     // facts from the DOM for every kept node, one call: box, visibility, href, input type
     const objs = await Promise.all(want.map((w) => this.page.send("DOM.resolveNode", { backendNodeId: w.n.backendDOMNodeId, objectGroup: "cu-snap" }).then((r) => r.object?.objectId).catch(() => null)));
@@ -211,6 +220,7 @@ export class Browser {
       const el = { ref: this.refFor(w.n.backendDOMNodeId, w.n.backendDOMNodeId, this.page.sessionId), role, name: w.name, states: w.states,
         region: w.region || undefined, in_dialog: w.inDialog || undefined, cy: f.y + f.h / 2, cx: f.x + f.w / 2, w: f.w, h: f.h };
       if (role === "dialog") { el.dialog_root = true; el.in_dialog = true; }
+      if (w.hint && !el.name) el.hint = w.hint;
       if (role === "entry" && w.value != null) el.text_value = String(w.value);
       else if ((role === "combo box" || role === "slider" || role === "spin button") && w.value != null && w.value !== "") el.value = String(w.value);
       if (role === "link" && f.href) el.href = f.href;

@@ -15,7 +15,7 @@
 // Outcome = { tool, target?, outcome: "ok"|"no_change"|"unverified"|"refused"|"failed"|"blocked",
 //             changed: { url?, dialogs?, focus?, checked?, expanded?, selected? }, detail }
 
-export const OBS_VERSION = 1;
+export const OBS_VERSION = 2;   // 2: a nameless control may carry a cue marker (label / under) after its name
 
 // ---- roles: AT-SPI's names -> a closed vocabulary of 17 ------------------------------------------------------
 export const ROLE_MAP = {
@@ -128,6 +128,9 @@ export function observe(snapshot, ctx = {}) {
     else if (el.value != null && typeof el.value !== "object") e.value = String(el.value);
     const href = shortHref(el.href, host);
     if (href) e.href = href;
+    // a control with no name carries a cue from the page (its label text, or the heading it sits under): shown as a
+    // separate marker after the name, never inside the quotes. LINE FORMAT 2 (2026-11-27).
+    if (!name && el.hint?.text) e.hint = { how: el.hint.how === "label" ? "label" : "under", text: normName(el.hint.text).slice(0, 60) };
     if (el.off_site) e.off_site = true;
     const key = `${role}\u0000${name}\u0000${href || ""}\u0000${e.region}\u0000${e.value ?? ""}`;
     const prev = name ? seen.get(key) : undefined;
@@ -172,6 +175,7 @@ export function observe(snapshot, ctx = {}) {
 const q = (s) => JSON.stringify(s);
 export function renderElement(e) {
   let line = `${e.ref} ${e.role} ${q(e.name)}`;
+  if (e.hint) line += ` (${e.hint.how} ${q(e.hint.text)})`;
   if (e.value !== undefined && e.value !== "") line += ` = ${q(e.value)}`;
   if (e.states.length) line += ` (${e.states.join(",")})`;
   if (e.href) line += ` -> ${e.href}${e.off_site ? " [off-site]" : ""}`;

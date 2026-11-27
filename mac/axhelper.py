@@ -164,6 +164,10 @@ def snapshot(include_text=False):
     budget = float(_os.environ.get("COMPUTER_USE_READ_BUDGET_S", "4") or 0)
     deadline = time.time() + budget if budget > 0 else None
     over = [False]
+    # CUE for a control with NO accessible name (dropdown "" = "All Day"): the nearest label-like text since the last
+    # control, else the nearest heading above it. Stored apart from the name (el["hint"]), never inside it; none found =
+    # no cue, never a guess. (2026-11-27: six of the pilot's 37 verified targets were nameless lines.)
+    cue = {"label": None, "heading": None}
     def walk(e, region, in_dialog, in_control, depth, in_listbox=False):
         if depth > 120 or over[0]: return
         if deadline is not None and time.time() > deadline:
@@ -198,6 +202,9 @@ def snapshot(include_text=False):
         if kids is None or not isinstance(kids, (list, tuple)) and not hasattr(kids, "__len__"):
             kids = attr(e, "AXChildren")
         keep = role is not None
+        if role_ax == "AXStaticText" and not in_control:
+            _t = " ".join(text_of(g(4)).split())
+            if 1 < len(_t) <= 60: cue["label"] = _t
         if role in ("static",) and (not include_text or in_control): keep = False
         if keep:
             name = text_of(g(2)) or text_of(g(3))
@@ -261,6 +268,12 @@ def snapshot(include_text=False):
                 elif role in ("combo box", "slider", "spin button") and val not in (None, ""): el["value"] = text_of(val)
                 if role_ax == "AXPopUpButton": el["native_select"] = True
                 if role == "link" and g(12) is not None: el["href"] = text_of(g(12))
+                if role == "heading" and name: cue["heading"], cue["label"] = name, None
+                elif role in ACTIONABLE:
+                    if not el["name"]:
+                        if cue["label"]: el["hint"] = {"how": "label", "text": cue["label"]}
+                        elif cue["heading"]: el["hint"] = {"how": "under", "text": cue["heading"]}
+                    cue["label"] = None          # a label belongs to the first control after it
                 out.append(el)
         child_in_control = in_control or (role in ACTIONABLE) or role == "heading"
         if kids:
