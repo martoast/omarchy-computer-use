@@ -233,15 +233,34 @@ tool("read_after_navigation", {
 });
 
 tool("page_text", {
-  title: "Save the page's full text to a file (read-only)",
-  description: "Write the visible text of the page now open to a local file and return its path and length.",
-  inputSchema: z.object({ ...W, max_chars: z.number().int().min(1000).max(8000000).default(4000000), from_end: z.boolean().default(false) }).strict(),
+  title: "Read the page's text (read-only)",
+  description: "The visible text of the page now open, IN the reply. By default the first max_chars characters (2,000). With `query`, only the lines that contain it (case-insensitive) with 2 lines before and after each, in page order: the cheap way to find a value on a long page. Use from_end for the end of the page.",
+  // inline:false is for programs (the benchmark's reader and final capture): it writes the whole text to a file and
+  // returns {path, chars}. A planner has no file tool, so a path was a dead reply (56 of them in 70 Sonnet runs, b7).
+  inputSchema: z.object({ ...W, max_chars: z.number().int().min(200).max(8000000).optional(), from_end: z.boolean().default(false), query: z.string().optional(), inline: z.boolean().default(true) }).strict(),
 }, async (a) => {
   let t = await browser.pageText(8000000);
-  t = a.from_end ? t.slice(-(a.max_chars ?? 4000000)) : t.slice(0, a.max_chars ?? 4000000);
-  const f = path.join(os.tmpdir(), `cu-page-text-${process.pid}-${Date.now()}.txt`);
-  fs.writeFileSync(f, t);
-  return { text: JSON.stringify({ path: f, chars: t.length }) };
+  if (a.inline === false) {
+    const cap = a.max_chars ?? 4000000;
+    t = a.from_end ? t.slice(-cap) : t.slice(0, cap);
+    const f = path.join(os.tmpdir(), `cu-page-text-${process.pid}-${Date.now()}.txt`);
+    fs.writeFileSync(f, t);
+    return { text: JSON.stringify({ path: f, chars: t.length }) };
+  }
+  const total = t.length, cap = a.max_chars ?? 2000;
+  if (a.query) {
+    const lines = t.split("\n").map((l) => l.trim()).filter(Boolean), q = a.query.toLowerCase(), keep = new Set();
+    lines.forEach((l, i) => { if (l.toLowerCase().includes(q)) for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < lines.length) keep.add(k); });
+    const idx = [...keep].sort((x, y) => x - y), hits = lines.filter((l) => l.toLowerCase().includes(q)).length;
+    if (!hits) return { text: `No line of the page's text contains "${a.query}" (${lines.length} lines, ${total} chars). Try another word, or page_text without query for the start of the page.` };
+    const out = []; let prev = -1;
+    for (const i of idx) { if (i > prev + 1) out.push(`(${i - prev - 1} lines not shown)`); out.push(lines[i]); prev = i; }
+    if (prev < lines.length - 1) out.push(`(${lines.length - 1 - prev} lines not shown)`);
+    const body = out.join("\n");
+    return { text: `Page text, the ${hits} line(s) containing "${a.query}" with their neighbours (page order):\n${body.length > cap ? body.slice(0, cap) + `\n(cut at ${cap} chars: narrow the query)` : body}` };
+  }
+  const part = a.from_end ? t.slice(-cap) : t.slice(0, cap);
+  return { text: `Page text (${a.from_end ? "last" : "first"} ${part.length} of ${total} chars${total > part.length ? "; use query to find a value, or a larger max_chars" : ""}):\n${part}` };
 });
 
 tool("list_images", {
