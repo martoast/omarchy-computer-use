@@ -86,12 +86,39 @@ tool("read_page", {
   inputSchema: z.object({ ...W, filter_text: z.string().optional().describe("Only elements whose name contains this (case-insensitive)."), filter_role: z.string().optional().describe("Only elements of this role (several with |), e.g. 'push button', 'link', 'entry', 'combo box', 'heading', 'dialog'."),
     include_text: z.boolean().default(false).describe("Also include text/paragraphs for reading page content."), limit: z.number().int().min(10).max(2000).optional(), format: z.enum(["text", "compact"]).optional() }).strict(),
 }, async ({ filter_text, filter_role, include_text, limit }) => {
-  const snap = await browser.snapshot({ includeText: !!include_text });
-  let els = snap.elements;
-  if (filter_text) { const f = filter_text.toLowerCase(); els = els.filter((e) => String(e.name).toLowerCase().includes(f) || e.dialog_root); }
-  if (filter_role) { const rs = filter_role.toLowerCase().split("|").map((s) => s.trim()); els = els.filter((e) => rs.includes(e.role) || (rs.includes("button") && e.role === "push button") || (rs.includes("textbox") && e.role === "entry")); }
+  // Three read fixes, each behind its own switch and off by default until a round supports them (Henry2's research on
+  // b7: 3.4 of Sonnet's 9.7 round trips returned nothing it could use):
+  //   COMPUTER_USE_READ_NEIGHBOURS=1  a filter_text hit comes with the 2 elements before and after it in page order
+  //                                   (texts included), so a label comes with its value ("Downloads all time" + the number)
+  //   COMPUTER_USE_READ_ROLE_FALLBACK=1  filter_role + filter_text with no hit: answer with the text-alone hits and say
+  //                                   the role was dropped (the text was on the page in 8-9 of 22 zero-hit reads)
+  //   COMPUTER_USE_READ_DIALOG_LINE=1 any filtered read lists an open dialog or consent banner, whatever the filter
+  const NEIGH = process.env.COMPUTER_USE_READ_NEIGHBOURS === "1", FALLBACK = process.env.COMPUTER_USE_READ_ROLE_FALLBACK === "1", DIALOG = process.env.COMPUTER_USE_READ_DIALOG_LINE === "1";
+  const snap = await browser.snapshot({ includeText: !!include_text || (NEIGH && !!filter_text) });
+  const all = snap.elements, notes = [];
+  const byText = (list) => { const f = filter_text.toLowerCase(); return list.filter((e) => String(e.name).toLowerCase().includes(f) || e.dialog_root); };
+  const rs = filter_role ? filter_role.toLowerCase().split("|").map((x) => x.trim()) : null;
+  const byRole = (list) => list.filter((e) => rs.includes(e.role) || (rs.includes("button") && e.role === "push button") || (rs.includes("textbox") && e.role === "entry"));
+  let els = all;
+  if (filter_text) els = byText(els);
+  if (filter_role) els = byRole(els);
+  if (FALLBACK && filter_text && filter_role && !els.some((e) => !e.dialog_root)) {
+    const t = byText(all).filter((e) => !e.dialog_root);
+    if (t.length) { els = byText(all); notes.push(`No ${filter_role} contains "${filter_text}". The role filter was dropped: these ${t.length} element(s) of other roles contain it.`); }
+  }
+  if (NEIGH && filter_text && els.some((e) => !e.dialog_root)) {
+    const idx = new Map(all.map((e, i) => [e, i])), keep = new Set();
+    for (const e of els) { const i = idx.get(e); for (let k = i - 2; k <= i + 2; k++) if (k >= 0 && k < all.length) keep.add(k); }
+    const hits = els.filter((e) => !e.dialog_root).length;
+    els = [...keep].sort((a, b) => a - b).map((i) => all[i]);
+    notes.push(`${hits} element(s) contain "${filter_text}"; each is shown with the 2 elements before and after it in page order.`);
+  }
+  if (DIALOG && (filter_text || filter_role)) {
+    const dl = all.filter((e) => e.dialog_root && !els.includes(e));
+    if (dl.length) { els = [...dl, ...els]; notes.push(`A dialog is open on the page (${dl.map((e) => JSON.stringify(String(e.name).slice(0, 60))).join(", ")}): it may cover what you are looking for.`); }
+  }
   const obs = observe({ page: snap.page, elements: els }, { viewport: snap.viewport, budget: limit ?? (include_text ? 600 : 250) });
-  return { content: [{ type: "text", text: renderObservation(obs) }], ...(structured() ? { structuredContent: { observation: obs } } : {}) };
+  return { content: [{ type: "text", text: (notes.length ? notes.join("\n") + "\n" : "") + renderObservation(obs) }], ...(structured() ? { structuredContent: { observation: obs } } : {}) };
 });
 
 const target = { ref: z.string().optional().describe("A ref like 'e3' from read_page."), text: z.string().optional().describe("Accessible name to search for (case-insensitive substring), if not using ref."), role: z.string().optional() };
