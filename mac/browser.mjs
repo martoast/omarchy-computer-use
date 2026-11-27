@@ -378,8 +378,12 @@ export class Browser {
   // (wait for the flag too) is COMPUTER_USE_SETTLE=load. A page that never goes quiet returns "usable_changing" after
   // usableMs of having content. COMPUTER_USE_SETTLE_LOG=<file> logs every wait; with COMPUTER_USE_SETTLE_PROBE=1 a
   // background watcher also logs when the OLD rule would have returned, so the saving is measured, not guessed.
-  async waitSettled({ quietMs = 400, usableMs = 1500, maxMs = 15000, urlContains = null, notUrl = null } = {}) {
-    const t0 = Date.now(), EARLY = (process.env.COMPUTER_USE_SETTLE || "early") !== "load", MIN = 6;
+  // explicit: the planner ASKED to wait (wait_page_settled, wait_for_element). Then the full-load rule always applies:
+  // under "early" such a wait returned in ~100 ms on any loading page with 6 elements, so it could not wait out a
+  // "checking your browser" interstitial (d1b task 10: two waits of 86 and 108 ms, then "blocked"; Henry2's hand check).
+  // The early rule is only for the settle an action does on its own.
+  async waitSettled({ quietMs = 400, usableMs = 1500, maxMs = 15000, urlContains = null, notUrl = null, explicit = false } = {}) {
+    const t0 = Date.now(), EARLY = !explicit && (process.env.COMPUTER_USE_SETTLE || "early") !== "load", MIN = 6;
     let readySince = null, contentSince = null, state = "loading", i = null, nEls = 0, lastCount = 0;
     const count = async () => { const s = await this.snapshot().catch(() => null); nEls = s ? s.elements.length : 0; return nEls; };
     const log = (o) => { const f = process.env.COMPUTER_USE_SETTLE_LOG; if (f) { try { fs.appendFileSync(f, JSON.stringify({ t: Date.now(), ...o }) + "\n"); } catch {} } };

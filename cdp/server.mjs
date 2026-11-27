@@ -195,7 +195,7 @@ tool("wait_page_settled", {
   title: "Wait until the page has finished loading",
   description: "Wait until the page is loaded, its network is quiet and its content has stopped changing for quiet_ms (reason 'quiet'), or it has been ready for 2.5 s while something keeps changing (reason 'usable_changing'). Returns {settled, reason, ms, ready_ms, events}.",
   inputSchema: z.object({ ...W, quiet_ms: z.number().int().min(100).max(5000).default(800), max_ms: z.number().int().min(500).max(60000).default(15000), url_contains: z.string().optional(), title_contains: z.string().optional(), not_doc: z.string().optional() }).strict(),
-}, async (a) => ({ text: JSON.stringify(await browser.waitSettled({ quietMs: a.quiet_ms ?? 400, maxMs: a.max_ms ?? 15000, urlContains: a.url_contains })) }));
+}, async (a) => ({ text: JSON.stringify(await browser.waitSettled({ quietMs: a.quiet_ms ?? 400, maxMs: a.max_ms ?? 15000, urlContains: a.url_contains, explicit: true })) }));
 
 tool("wait_for_element", {
   title: "Wait for an element to appear",
